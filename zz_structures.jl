@@ -1,22 +1,22 @@
-using Distributions, Optim, RCall
-abstract type outputtimer end
-abstract type outputformater end
+using Distributions, Optim, RCall, ProgressMeter
 include("mbsampler.jl")
-using ProgressMeter
-
-abstract type ll_model end
-abstract type prior_model end
-
 R"""
 library("GIGrvg")
 """
 
-# Define abstract type for gaussian prior, sub-types of this abstract types must have attributes mu and sigma2  
+abstract type outputtimer end
+abstract type outputformater end
 
+abstract type ll_model end
+abstract type prior_model end
+abstract type msampler end
+    
+# Define abstract type for gaussian prior, sub-types of this abstract types must have attributes mu and sigma2  
 abstract type gaussian_prior <:prior_model end
 abstract type laplace_prior <:prior_model end
 
 abstract type bound end
+
 
 mutable struct const_bound<:bound
     a::Float64
@@ -34,15 +34,28 @@ mutable struct outputscheduler
     opt::outputtimer
 end
 
-function feed(outp::outputscheduler, state::zz_state, time, bounce)
+mutable struct zz_state 
+    ξ::Array{Float64}
+    θ::Array{Float64}
+end
+
+mutable struct zz_sampler <:msampler
+   i0::Int64
+   gs::sampler_list
+   bb::bound
+end
+
+function feed(outp::outputscheduler, state::zz_state, prior::prior_model, time::Float64, bounce::Bool)
     
-    if add_output(outp.opf, state.ξ, state.θ , time, bounce)
-        if outp.opf.tcounter > size(outp.opf.bt_skeleton)[2]
+    if add_output(outp.opf, state, time, bounce)
+        if outp.opf.tcounter > size(outp.opf.bt_skeleton,2)
             outp.opf.xi_skeleton = extend_skeleton_points(outp.opf.xi_skeleton, outp.opf.size_increment)
             outp.opf.bt_skeleton = extend_skeleton_points(outp.opf.bt_skeleton, outp.opf.size_increment)
+            outp.opf.hyper_skeleton = extend_skeleton_points(outp.opf.hyper_skeleton, outp.opf.size_increment)
         end
         outp.opf.xi_skeleton[:,opf.tcounter] = compress_xi(outp.opf, state.ξ)
         outp.opf.bt_skeleton[:,opf.tcounter] = time
+        outp.opf.hyper_skeleton[:,opf.tcounter] = get_hyperparams(prior)
         outp.opf.tcounter +=1 
     end
     outp.opt = eval_stopping(outp.opt, state.ξ, time, bounce)
@@ -60,7 +73,7 @@ end
 
 
 
-function add_output(opf::outputformater, xi, time,bounce)
+function add_output(opf::outputformater, state::zz_state, time::Float64, bounce::Bool)
    return bounce 
 end
 
@@ -80,6 +93,7 @@ end
 function finalize(opf::outputformater)
     opf.xi_skeleton = opf.xi_skeleton[:,1:opf.tcounter-1]
     opf.bt_skeleton = opf.bt_skeleton[:,1:opf.tcounter-1]
+    opf.hyper_skeleton = opf.hyper_skeleton[:,1:opf.tcounter-1]
 end
 
 mutable struct projopf <:outputformater
@@ -87,21 +101,25 @@ mutable struct projopf <:outputformater
     xi_skeleton::Array{Float64}
     bt_skeleton::Array{Float64}
     theta::Array{Float64} 
+    hyper_skeleton::Array{Float64}
+    hyper_size::Int64
     tcounter::Int64
     size_increment::Int64
     A::Array{Float64}
     d_out::Int64
 end
 
-projopf(A, size_increment) = projopf(built_projopf(A, size_increment)...)
+projopf(A, size_increment, hyper_size) = projopf(built_projopf(A, size_increment, hyper_size)...)
+projopf(A, size_increment) = projopf(built_projopf(A, size_increment, 0)...)
 
-function built_projopf(A, size_increment)
+function built_projopf(A, size_increment, hyper_size)
     d_out, d = size(A)
     xi_skeleton = zeros(d,10*size_increment)
     bt_skeleton = zeros(1,10*size_increment)
     tcounter = 2
     theta = ones(d)
-    return d, xi_skeleton, bt_skeleton, theta, tcounter, size_increment, A, d_out
+    hyper_skeleton = ones(hyper_size, 10*size_increment)
+    return d, xi_skeleton, bt_skeleton, theta, hyper_skeleton, hyper_size, tcounter, size_increment, A, d_out
 end
 
 function compress_xi(outp::projopf, xi)
@@ -424,7 +442,7 @@ function get_μ(pp::gaussian_prior)
     return pp.μ
 end
 
-function get_n_hyperparams(pp::gaussian_prior) 
+function hyperparams_size(pp::gaussian_prior) 
     return 0 
 end
 
@@ -456,10 +474,6 @@ function get_μ(prior::HS_prior)
     return zeros(prior.d)
 end
 
-function get_n_hyperparams(prior::HS_prior) 
-    return 2*(prior.d-1) 
-end
-
 function block_Gibbs_update_hyperparams(prior::HS_prior, ξ)
     #gibbs steps here 
     prior.λ2 = [rand(InverseGamma(1, 1/prior.ν[i] + ξ[i+1]^2/(2prior.τ2))) for i in 1:prior.d-1]
@@ -467,6 +481,19 @@ function block_Gibbs_update_hyperparams(prior::HS_prior, ξ)
     prior.ν  = [rand(InverseGamma(1, 1+1/prior.λ2[i])) for i in 1:prior.d-1]
     prior.γ  = rand(InverseGamma(1, 1+1/prior.τ2))
     return prior
+end
+
+function hyperparam_size(prior::HS_prior) 
+    return 2*(prior.d-1) + 2 
+end
+
+function get_hyperparams(prior::HS_prior) 
+    hyperparams = zeros(hyperparam_size(prior))
+    hyperparams[1:prior.d-1] = prior.λ2
+    hyperparams[(prior.d-1)+1] = prior.τ2
+    hyperparams[(prior.d-1)+1+(1:prior.d-1)] = prior.ν
+    hyperparams[(prior.d-1)+1+(prior.d-1)+1] = prior.γ
+    return hyperparams
 end
 
 #--------------------------------------------------------------------------------------------------------
@@ -506,15 +533,19 @@ function block_Gibbs_update_hyperparams(prior::GDP_prior, ξ)
     return prior
 end
 
-function get_n_hyperparams(prior::GDP_prior) 
-    return 2*prior.d-1
+function hyperparam_size(prior::GDP_prior) 
+    return 2*(prior.d-1) + 1
 end
 
-get_hyperparameters(prior::GDP_prior)
-
+function get_hyperparams(prior::GDP_prior)
+    hyperparams = zeros(hyperparam_size(prior::GDP_prior))
+    hyperparams[1:prior.d-1] = prior.λ
+    hyperparams[(prior.d-1) + (1:prior.d-1)] = prior.τ
+    hyperparams[(prior.d-1)+(prior.d-1)+1] = prior.σ2
+    return hyperparams
 end
 
-set_hyperparameters(prior::GDP_prior)
+function set_hyperparameters(prior::GDP_prior)
 end
 #--------------------------------------------------------------------------------------------------------
 # Structure implementing normal gamma prior
@@ -538,13 +569,9 @@ function get_μ(prior::NG_prior)
     return zeros(prior.d)
 end
 
-function get_n_hyperparams(prior::GDP_prior) 
-    return prior.d+1
-end
-
 function block_Gibbs_update_hyperparams(prior::NG_prior, ξ)
     #gibbs steps here 
-    for i in 1:d-1 
+    for i in 1:prior.d-1 
         xi = ξ[i+1]^2
         reval("x=rgig(n=1, lambda=$(prior.λ-1/2), chi=$(1/prior.γ2), psi=$xi)")
         prior.Ψ[i] = @rget x
@@ -563,9 +590,22 @@ function block_Gibbs_update_hyperparams(prior::NG_prior, ξ)
     return prior
 end
 
+function hyperparam_size(prior::NG_prior) 
+    return (prior.d-1) + 2
+end
+
+function get_hyperparams(prior::NG_prior)
+    hyperparams = zeros(hyperparam_size(prior))
+    hyperparams[1:prior.d-1] = prior.Ψ
+    hyperparams[(prior.d-1)+1] = prior.λ
+    hyperparams[(prior.d-1)+1+1] = prior.γ2
+end
+
+
 #--------------------------------------------------------------------------------------------------------
 
-function get_event_time(ai, bi)     # for linear bounds
+# For linear bounds
+function get_event_time(ai::Float64, bi::Float64)     
     # this assumed that bi is non-negative
     if bi > 0 
         u = rand()
@@ -606,21 +646,10 @@ end
 
 
 pos(x) = max.(x, 0.)
- 
-abstract type sampler
     
-mutable struct zz_state 
-    ξ::Array{Float64}
-    θ::Array{Float64}
-end
 
-mutable struct zz_sampler <: sampler
-   i0::Int
-   gs::sampler_list
-   bb::bound
-end
 
-mutable struct block_gibbs_sampler <: sampler
+mutable struct block_gibbs_sampler <:msampler
    λ::Float64
 end
 
@@ -629,6 +658,7 @@ function get_event_time(mysampler::block_gibbs_sampler, mstate::zz_state, model:
 end
 function evolve_path(mysampler::block_gibbs_sampler, mstate::zz_state, τ)
     mstate.ξ += τ*mstate.θ
+    
 end
 function update_state(mysampler::block_gibbs_sampler, mstate::zz_state, model::model, τ)
     block_Gibbs_update_hyperparams(model.pr, mstate.ξ)
@@ -647,8 +677,9 @@ function get_event_time(mysampler::zz_sampler, mstate::zz_state, model::model)
 end
 
 function evolve_path(mysampler::zz_sampler, mstate::zz_state, τ)
-    mstate.ξ += τ*mstate.θ
+    mstate.ξ += τ*mstate.θ    
 end
+
 function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
     mb = gsample(mysampler.gs.mbs[mysampler.i0])
     rate_estimated = estimate_rate(model, mstate.ξ, mstate.θ, mysampler.i0, mb, mysampler.gs)
@@ -659,12 +690,13 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
     end
     bounce = false
     if rand() < alpha
-        mstate.θ[i0] *= -1
+        mstate.θ[mysampler.i0] *= -1
         bounce = true
     end 
     return bounce
 end
 
+"""
 function ZZ_sample(model::model, outp::outputscheduler)
 
     d, Nobs = size(model.ll.X) 
@@ -674,7 +706,7 @@ function ZZ_sample(model::model, outp::outputscheduler)
     θ = outp.opf.theta
     t = copy(outp.opf.bt_skeleton[outp.opf.tcounter-1])
     
-    bb = linear_bound(model.ll, model.pr, gs) 
+    bb = linear_bound(model.ll, model.pr, gs)
     counter = 1
     
 #-------------------------------------------------------------------------
@@ -698,18 +730,18 @@ function ZZ_sample(model::model, outp::outputscheduler)
     #finalize(outp.opf)
     return outp
 end
+"""
 
-function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Array{sampler})
+function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Array{msampler})
 
-    K = size(blocksampler)
+    K = length(blocksampler)
     d, Nobs = size(model.ll.X) 
-    mb_size = gs.mbs[1].mb_size
 
-    ξ = copy(outp.opf.xi_skeleton[:,outp.opf.tcounter-1])
-    θ = outp.opf.theta
     t = copy(outp.opf.bt_skeleton[outp.opf.tcounter-1])
     
-    bb = linear_bound(model.ll, model.pr, gs) 
+    mstate = zz_state(copy(outp.opf.xi_skeleton[:,outp.opf.tcounter-1]), copy(outp.opf.theta))
+    
+    #bb = linear_bound(model.ll, model.pr, gs) 
     counter = 1
     
 #-------------------------------------------------------------------------
@@ -717,24 +749,26 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
     bounce = false
     while(is_running(outp.opt))
         
-        τ_list = [get_event_time(blocksampler[i],mstate) for i in 1:K]
+        τ_list = [get_event_time(blocksampler[i],mstate, model) for i in 1:K]
         τ, k0 = findmin(τ_list)
         #-------------------------------------
         t += τ 
         
-        evolve_path(mysampler[k0],mstate,τ)
-        bounce = update_state(mysampler[k0],mstate,τ)
+        evolve_path(blocksampler[k0], mstate, τ)
+        bounce = update_state(blocksampler[k0], mstate, model, τ)
         
-        outp = feed(outp, mstate, model.pr, bounce)
+        #outp = feed(outp, mstate, model.pr, bounce)
+        outp = feed(outp::outputscheduler, mstate::zz_state, model.pr::prior_model, t, bounce)
         
         counter += 1
-        if counter%100_000 == 0 
+        if counter%10_000 == 0 
             gc()
         end
     end
     #finalize(outp.opf)
     return outp
 end
+
 
 
 #--------------------------------------------------------------------------------------------------------
