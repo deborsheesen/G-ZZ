@@ -1,5 +1,6 @@
 using Distributions, Optim, RCall, ProgressMeter
 include("mbsampler.jl")
+
 R"""
 library("GIGrvg")
 """
@@ -114,8 +115,8 @@ projopf(A, size_increment) = projopf(built_projopf(A, size_increment, 0)...)
 
 function built_projopf(A, size_increment, hyper_size)
     d_out, d = size(A)
-    xi_skeleton = zeros(d,10*size_increment)
-    bt_skeleton = zeros(1,10*size_increment)
+    xi_skeleton = zeros(d, 10*size_increment)
+    bt_skeleton = zeros(1, 10*size_increment)
     tcounter = 2
     theta = ones(d)
     hyper_skeleton = ones(hyper_size, 10*size_increment)
@@ -434,6 +435,8 @@ struct gaussian_prior_nh <:gaussian_prior
     σ2::Array{Float64}
 end
 
+gaussian_prior_nh(d, σ2) = gaussian_prior_nh(ones(d), σ2*ones(d))
+
 function get_σ2(prior::gaussian_prior)
     return prior.σ2
 end
@@ -455,7 +458,11 @@ function get_hyperparams(prior::gaussian_prior_nh)
     return hyperparams
 end
 
-gaussian_prior_nh(d, σ2) = gaussian_prior_nh(ones(d), σ2*ones(d))
+function set_hyperparams(prior::gaussian_prior_nh, hyperparams::Array) 
+    # do nothing
+end
+
+
 
 #--------------------------------------------------------------------------------------------------------
 # Structure implementing horseshoe prior
@@ -501,6 +508,14 @@ function get_hyperparams(prior::HS_prior)
     hyperparams[(prior.d-1)+1+(1:prior.d-1)] = prior.ν
     hyperparams[(prior.d-1)+1+(prior.d-1)+1] = prior.γ
     return hyperparams
+end
+
+function set_hyperparams(prior::HS_prior, hyperparams::Array{Float64}) 
+    @assert hyperparam_size(prior) == length(hyperparams)
+    prior.λ2 = hyperparams[1:prior.d-1]
+    prior.τ2 = hyperparams[(prior.d-1)+1]
+    prior.ν = hyperparams[(prior.d-1)+1+(1:prior.d-1)]
+    prior.γ = hyperparams[(prior.d-1)+1+(prior.d-1)+1]
 end
 
 #--------------------------------------------------------------------------------------------------------
@@ -552,8 +567,13 @@ function get_hyperparams(prior::GDP_prior)
     return hyperparams
 end
 
-function set_hyperparameters(prior::GDP_prior)
+function set_hyperparams(prior::GDP_prior, hyperparams::Array{Float64})
+    @assert hyperparam_size(prior) == length(hyperparams)
+    prior.λ = hyperparams[1:prior.d-1]
+    prior.τ = hyperparams[(prior.d-1) + (1:prior.d-1)]
+    prior.σ2 = hyperparams[(prior.d-1)+(prior.d-1)+1]
 end
+
 #--------------------------------------------------------------------------------------------------------
 # Structure implementing normal gamma prior
 #--------------------------------------------------------------------------------------------------------
@@ -608,6 +628,13 @@ function get_hyperparams(prior::NG_prior)
     hyperparams[(prior.d-1)+1+1] = prior.γ2
 end
 
+function set_hyperparams(prior::NG_prior, hyperparams::Array{Float64})
+    @assert hyperparam_size(prior) == length(hyperparams)
+    prior.Ψ = hyperparams[1:prior.d-1]
+    prior.λ = hyperparams[(prior.d-1)+1]
+    prior.γ2 = hyperparams[(prior.d-1)+1+1]
+end
+
 
 #--------------------------------------------------------------------------------------------------------
 
@@ -660,22 +687,30 @@ mutable struct block_gibbs_sampler <:msampler
    λ::Float64
 end
 
+## --------------------------------------------------------------------------------------------------
+## UPDATE STEPS FOR HYPER-PARAMETERS
+## --------------------------------------------------------------------------------------------------
+
 function get_event_time(mysampler::block_gibbs_sampler, mstate::zz_state, model::model)
     return rand(Exponential(1.0/mysampler.λ))
 end
+
 function evolve_path(mysampler::block_gibbs_sampler, mstate::zz_state, τ)
-    mstate.ξ += τ*mstate.θ
-    
+    mstate.ξ += τ*mstate.θ    
 end
+
 function update_state(mysampler::block_gibbs_sampler, mstate::zz_state, model::model, τ)
     block_Gibbs_update_hyperparams(model.pr, mstate.ξ)
     return true
 end
 
+## --------------------------------------------------------------------------------------------------
+## UPDATE STEPS FOR PARAMETERS
+## --------------------------------------------------------------------------------------------------
+
 
 function get_event_time(mysampler::zz_sampler, mstate::zz_state, model::model)
-    mysampler.bb = update_bound(mysampler.bb, model.ll, model.pr, mysampler.gs, mstate.ξ, mstate.θ)
-    #-------------------------------------
+    
     event_times = [get_event_time(mysampler.bb.a_fixed[i] + mysampler.bb.a_xi[i], mysampler.bb.b_fixed[i] + mysampler.bb.b_xi[i]) 
                       for i in 1:d]  
     τ, i0 = findmin(event_times) 
@@ -684,13 +719,14 @@ function get_event_time(mysampler::zz_sampler, mstate::zz_state, model::model)
 end
 
 function evolve_path(mysampler::zz_sampler, mstate::zz_state, τ)
-    mstate.ξ += τ*mstate.θ    
+    mstate.ξ += τ*mstate.θ
 end
 
 function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
     mb = gsample(mysampler.gs.mbs[mysampler.i0])
     rate_estimated = estimate_rate(model, mstate.ξ, mstate.θ, mysampler.i0, mb, mysampler.gs)
-
+    mysampler.bb = update_bound(mysampler.bb, model.ll, model.pr, mysampler.gs, mstate.ξ, mstate.θ)
+    
     alpha = (rate_estimated)/evaluate_bound(mysampler.bb,τ,mysampler.i0)
     if alpha > 1
         print("alpha: ",alpha,"\n")
@@ -742,14 +778,10 @@ end
 function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Array{msampler})
 
     K = length(blocksampler)
-    d, Nobs = size(model.ll.X) 
+    counter = 1
 
     t = copy(outp.opf.bt_skeleton[outp.opf.tcounter-1])
-    
     mstate = zz_state(copy(outp.opf.xi_skeleton[:,outp.opf.tcounter-1]), copy(outp.opf.theta))
-    
-    #bb = linear_bound(model.ll, model.pr, gs) 
-    counter = 1
     
 #-------------------------------------------------------------------------
     # run sampler:
@@ -782,7 +814,7 @@ end
 # Other stuff: 
 #--------------------------------------------------------------------------------------------------------
 
-function extract_samples(skeleton_points, bouncing_times, h) 
+function extract_samples(skeleton_points, bouncing_times, h, interpolation="linear") 
     d, n = size(skeleton_points)
     path_length = bouncing_times[end] - bouncing_times[1]
     n_samples = Int64(floor(path_length/h)) + 1
@@ -796,7 +828,11 @@ function extract_samples(skeleton_points, bouncing_times, h)
         Δ_pos = stop - start   
         Δ_T = bouncing_times[i+1] - bouncing_times[i]
         while time_location <= bouncing_times[i+1]
-            samples[:,sample_index] = start + Δ_pos/Δ_T*(time_location - bouncing_times[i])
+            if interpolation == "linear"
+                samples[:,sample_index] = start + Δ_pos/Δ_T*(time_location - bouncing_times[i])
+            elseif interpolation == "constant"
+                samples[:,sample_index] = start
+            end
             time_location += h
             sample_index += 1
         end
@@ -936,6 +972,16 @@ function compute_configT(m::model, samples::gzz_samples, k)
     return configT/n_samples
 end
 
+function compute_configT(m::model, xi_samples::Array{Float64}, hyper_samples::Array{Float64}, k)
+    d, Nobs = size(m.ll.X)
+    n_samples = size(xi_samples,2)
+    configT = 0.0
+    for i in 1:n_samples
+        set_hyperparams(m.pr, hyper_samples[:,i])     
+        configT += xi_samples[k,i]*partial_derivative(m::model, xi_samples[:,i], k)
+    end
+    return configT/n_samples
+end
 
 
 
