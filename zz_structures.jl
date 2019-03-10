@@ -434,21 +434,28 @@ struct gaussian_prior_nh <:gaussian_prior
     σ2::Array{Float64}
 end
 
-function get_σ2(pp::gaussian_prior)
-    return pp.σ2
+function get_σ2(prior::gaussian_prior)
+    return prior.σ2
 end
 
-function get_μ(pp::gaussian_prior)
-    return pp.μ
+function get_μ(prior::gaussian_prior)
+    return prior.μ
 end
 
-function hyperparams_size(pp::gaussian_prior) 
+function block_Gibbs_update_hyperparams(prior::gaussian_prior_nh, ξ) 
+    # do nothing
+end
+
+function hyperparam_size(prior::gaussian_prior_nh) 
     return 0 
 end
 
-function block_Gibbs_update_hyperparams(g_prior_nh::gaussian_prior_nh, ξ) 
-    # do nothing
+function get_hyperparams(prior::gaussian_prior_nh) 
+    hyperparams = zeros(hyperparam_size(prior))
+    return hyperparams
 end
+
+gaussian_prior_nh(d, σ2) = gaussian_prior_nh(ones(d), σ2*ones(d))
 
 #--------------------------------------------------------------------------------------------------------
 # Structure implementing horseshoe prior
@@ -765,7 +772,7 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
             gc()
         end
     end
-    #finalize(outp.opf)
+    finalize(outp.opf)
     return outp
 end
 
@@ -797,11 +804,11 @@ function extract_samples(skeleton_points, bouncing_times, h)
     return samples
 end
 
-function compute_configT(m::model, samples, k)
+function compute_configT(m::model, samples::Array{Float64}, k)
     d, Nobs = size(X) 
     n_samples = size(samples,2)
     configT = 0.0
-    @showprogress for i in 1:n_samples
+    for i in 1:n_samples
         configT += samples[k,i]*partial_derivative(m::model, samples[:,i], k)
     end
     return configT/n_samples
