@@ -271,7 +271,7 @@ function build_linear_bound(ll::ll_logistic, pr::gaussian_prior, gs::cvmbsampler
     for j in 1:Nobs
         C_lipschitz[:,j] = 1/4*[abs.(ll.X[i,j])*norm(ll.X[:,j]) for i in 1:d]
     end
-    const_ = [maximum(C_lipschitz[i,:]./get_weights(gs.mbs[i], 1:Nobs)) for i in 1:d] + 1.0 ./get_σ2(pr)
+    const_ = [maximum(C_lipschitz[i,:]./get_weights(gs.mbs[i], 1:Nobs)) for i in 1:d]
     
     a_fixed = zeros(d)
     b_fixed = zeros(d)
@@ -282,8 +282,8 @@ end
 function update_bound(bb::linear_bound, ll::ll_logistic, pr::gaussian_prior, gs::cvmbsampler_list, mstate::zz_state)
     d = length(mstate.ξ)
     norm_ = norm(gs.root-mstate.ξ)
-    bb.a_xi = pos(mstate.θ.*mstate.α.*gs.gradient_log_posterior_root_sum) + mstate.α*norm_ .* bb.const_
-    bb.b_xi = mstate.α*norm(mstate.α) .* bb.const_
+    bb.a_xi = pos(mstate.θ.*mstate.α.*gs.gradient_log_posterior_root_sum) + mstate.α*norm_ .* (bb.const_ + 1.0 ./get_σ2(pr))
+    bb.b_xi = mstate.α*norm(mstate.α) .* (bb.const_ + 1.0 ./get_σ2(pr))
 end
 
 #--------------------------------------------------------------------------------------------------------
@@ -340,8 +340,6 @@ function update_bound(bb::linear_bound, ll::ll_logistic_sp, pr::gaussian_prior, 
     d, Nobs = size(ll.X)
     bb.a_xi = mstate.α .* (bb.const_ + abs.(mstate.ξ-get_μ(pr))./get_σ2(pr))
     bb.b_xi = mstate.α ./ get_σ2(pr)
-    
-
 end
 
 #-------------------- Bounds, with control variates + SPARSE -----------------------------# 
@@ -349,26 +347,32 @@ end
 function build_linear_bound(ll::ll_logistic_sp, pr::gaussian_prior, gs::cvmbsampler_list, mstate::zz_state)
     
     d, Nobs = size(ll.X)
-    #C_lipschitz = spzeros(d, Nobs)
-    #C = zeros(d)
-    #normXj = [norm(ll.X[:,j]) for j in 1:Nobs]
-    #for i in 1:d 
-        #nz_ind = ll.X[i,:].nzind
-        #C_lipschitz[i,nz_ind] = 1/4*abs.(ll.X[i,nz_ind ]).*normXj[nz_ind]
-        #C[i] = maximum( C_lipschitz[i,nz_ind]./get_weights(gs.mbs[i], nz_ind) )
-    #end
-    #C += 1./get_σ2(pr)
+    C_lipschitz = spzeros(d, Nobs)
+    const_ = zeros(d)
+    normXj = [norm(ll.X[:,j]) for j in 1:Nobs]
+    for i in 1:d 
+        nz_ind = ll.X[i,:].nzind
+        C_lipschitz[i,nz_ind] = 1/4*abs.(ll.X[i,nz_ind ]).*normXj[nz_ind]
+        const_[i] = maximum( C_lipschitz[i,nz_ind]./get_weights(gs.mbs[i], nz_ind) )
+    end
+    
     a_fixed = zeros(d)
     b_fixed = zeros(d)
     
-    return a_fixed, b_fixed
+    return a_fixed, b_fixed, const_
 end
 
 function update_bound(bb::linear_bound, ll::ll_logistic_sp, pr::gaussian_prior, gs::cvmbsampler_list, mstate::zz_state)
-    d = length(ξ0)
+    
+    d = length(mstate.ξ)
     norm_ = norm(gs.root-mstate.ξ)
-    bb.a_xi = pos(mstate.θ*mstate.α*gs.gradient_log_posterior_root_sum) .+ norm_*(gs.C + 1.0 ./get_σ2(pr))
-    bb.b_xi = norm(mstate.α)*(gs.C + 1.0 ./get_σ2(pr))
+    bb.a_xi = pos(mstate.θ.*mstate.α.*gs.gradient_log_posterior_root_sum) + mstate.α*norm_ .* (bb.const_ + 1.0 ./get_σ2(pr))
+    bb.b_xi = mstate.α*norm(mstate.α) .* (bb.const_ + 1.0 ./get_σ2(pr))
+    
+    #d = length(ξ0)
+    #norm_ = norm(gs.root-mstate.ξ)
+    #bb.a_xi = pos(mstate.θ*mstate.α*gs.gradient_log_posterior_root_sum) .+ norm_*(gs.C + 1.0 ./get_σ2(pr))
+    #bb.b_xi = norm(mstate.α)*(gs.C + 1.0 ./get_σ2(pr))
 end
 
 
@@ -395,7 +399,6 @@ function build_linear_bound(ll::ll_zeros, pr::gaussian_prior, gs::mbsampler_list
     d, Nobs = size(ll.X)
     a_fixed = zeros(d)
     b_fixed = zeros(d)
-    
     return a_fixed, b_fixed
 end
 
