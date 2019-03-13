@@ -288,6 +288,7 @@ struct cvmbsampler_list <: sampler_list
     gradient_log_prior_root::Array{Float64}
     gradient_log_ll_root_vec
     root::Array{Float64}
+    #C::Array{Float64}
 end
 cvmbsampler_list(m, mbs, root) = cvmbsampler_list(build_cvmbsampler_list(m, mbs, root)...)
 cvmbsampler_list(m, mbs, root, is_sparse) = cvmbsampler_list(build_cvmbsampler_list(m, mbs, root, is_sparse)...)
