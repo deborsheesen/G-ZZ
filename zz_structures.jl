@@ -24,11 +24,9 @@ mutable struct const_bound<:bound
 end
 
 mutable struct linear_bound<:bound
-    a_fixed::Array{Float64}
-    b_fixed::Array{Float64}
     const_::Array{Float64} # storing whatever constants we have 
-    a_xi::Array{Float64}
-    b_xi::Array{Float64}
+    a::Array{Float64}
+    b::Array{Float64}
 end
 
 mutable struct outputscheduler
@@ -125,7 +123,7 @@ projopf(A::Array{Float64}, size_increment::Int64, adapt_speed::Bool, hyper_size:
 projopf(A::Array{Float64}, size_increment::Int64, adapt_speed::Bool) = projopf(built_projopf(A, size_increment, adapt_speed, 0)...)
 projopf(A::Array{Float64}, size_increment::Int64) = projopf(A, size_increment, false)
 
-zz_state(opf::projopf) = zz_state(opf.xi_skeleton[:,opf.tcounter], opf.theta, opf.alpha_skeleton[:,opf.tcounter], opf.n_bounces, zeros(length(opf.theta)))
+zz_state(opf::projopf) = zz_state(opf.xi_skeleton[:,opf.tcounter], opf.theta, opf.alpha_skeleton[:,opf.tcounter], opf.n_bounces, ones(length(opf.theta)))
 
 
 function built_projopf(A, size_increment, adapt_speed, hyper_size)
@@ -260,15 +258,13 @@ end
 
 function build_linear_bound(ll::ll_logistic, pr::gaussian_prior, gs::mbsampler_list, mstate::zz_state)
     d, Nobs = size(ll.X)
-    a_fixed = zeros(d)
-    b_fixed = zeros(d)
     const_ = [maximum(abs.(ll.X[i,:]./get_weights(gs.mbs[i],1:Nobs))) for i in 1:d]
-    return a_fixed, b_fixed, const_
+    return const_
 end
 
 function update_bound(bb::linear_bound, ll::ll_logistic, pr::gaussian_prior, gs::mbsampler_list, mstate::zz_state)
-    bb.a_xi = mstate.α .* (bb.const_ + abs.(mstate.ξ-get_μ(pr))./get_σ2(pr))
-    bb.b_xi = (mstate.α)./get_σ2(pr)
+    bb.a = mstate.α .* (bb.const_ + abs.(mstate.ξ-get_μ(pr))./get_σ2(pr))
+    bb.b = (mstate.α)./get_σ2(pr)
 end
 
 #------------------------- Bounds, with control variates -----------------------------# 
@@ -282,17 +278,14 @@ function build_linear_bound(ll::ll_logistic, pr::gaussian_prior, gs::cvmbsampler
     end
     const_ = [maximum(C_lipschitz[i,:]./get_weights(gs.mbs[i], 1:Nobs)) for i in 1:d]
     
-    a_fixed = zeros(d)
-    b_fixed = zeros(d)
-    
-    return a_fixed, b_fixed, const_
+    return const_
 end
 
 function update_bound(bb::linear_bound, ll::ll_logistic, pr::gaussian_prior, gs::cvmbsampler_list, mstate::zz_state)
     d = length(mstate.ξ)
     norm_ = norm(gs.root-mstate.ξ)
-    bb.a_xi = pos(mstate.θ.*mstate.α.*gs.gradient_log_posterior_root_sum) + mstate.α*norm_ .* (bb.const_ + 1.0 ./get_σ2(pr))
-    bb.b_xi = mstate.α*norm(mstate.α) .* (bb.const_ + 1.0 ./get_σ2(pr))
+    bb.a = pos(mstate.θ.*mstate.α.*gs.gradient_log_posterior_root_sum) + mstate.α*norm_ .* (bb.const_ + 1.0 ./get_σ2(pr))
+    bb.b = mstate.α*norm(mstate.α) .* (bb.const_ + 1.0 ./get_σ2(pr))
 end
 
 #--------------------------------------------------------------------------------------------------------
@@ -335,20 +328,18 @@ function build_linear_bound(ll::ll_logistic_sp, pr::gaussian_prior, gs::mbsample
     # Redefine 
     d, Nobs = size(ll.X)
     
-    a_fixed = zeros(d)
-    b_fixed =  zeros(d)
     const_ = zeros(d)
     for i in 1:d
         nz_ind = ll.X[i,:].nzind
         const_[i] = maximum(abs.(ll.X[i,nz_ind]./get_weights(gs.mbs[i],nz_ind)))
     end
-    return a_fixed, b_fixed, const_
+    return const_
 end
 
 function update_bound(bb::linear_bound, ll::ll_logistic_sp, pr::gaussian_prior, gs::mbsampler_list, mstate::zz_state)
     d, Nobs = size(ll.X)
-    bb.a_xi = mstate.α .* (bb.const_ + abs.(mstate.ξ-get_μ(pr))./get_σ2(pr))
-    bb.b_xi = mstate.α ./ get_σ2(pr)
+    bb.a = mstate.α .* (bb.const_ + abs.(mstate.ξ-get_μ(pr))./get_σ2(pr))
+    bb.b = mstate.α ./ get_σ2(pr)
 end
 
 #-------------------- Bounds, with control variates + SPARSE -----------------------------# 
@@ -365,18 +356,15 @@ function build_linear_bound(ll::ll_logistic_sp, pr::gaussian_prior, gs::cvmbsamp
         const_[i] = maximum( C_lipschitz[i,nz_ind]./get_weights(gs.mbs[i], nz_ind) )
     end
     
-    a_fixed = zeros(d)
-    b_fixed = zeros(d)
-    
-    return a_fixed, b_fixed, const_
+    return const_
 end
 
 function update_bound(bb::linear_bound, ll::ll_logistic_sp, pr::gaussian_prior, gs::cvmbsampler_list, mstate::zz_state)
     
     d = length(mstate.ξ)
     norm_ = norm(gs.root-mstate.ξ)
-    bb.a_xi = pos(mstate.θ.*mstate.α.*gs.gradient_log_posterior_root_sum) + mstate.α*norm_ .* (bb.const_ + 1.0 ./get_σ2(pr))
-    bb.b_xi = mstate.α*norm(mstate.α) .* (bb.const_ + 1.0 ./get_σ2(pr))
+    bb.a = pos(mstate.θ.*mstate.α.*gs.gradient_log_posterior_root_sum) + mstate.α*norm_ .* (bb.const_ + 1.0 ./get_σ2(pr))
+    bb.b = mstate.α*norm(mstate.α) .* (bb.const_ + 1.0 ./get_σ2(pr))
     
 end
 
@@ -400,6 +388,8 @@ function partial_derivative_vec(ll::ll_zeros, ξ, k, mb)
     return zeros(length(mb))
 end
 
+"""
+To fix:
 function build_linear_bound(ll::ll_zeros, pr::gaussian_prior, gs::mbsampler_list, mstate::zz_state)
     d, Nobs = size(ll.X)
     a_fixed = zeros(d)
@@ -409,9 +399,10 @@ end
 
 function update_bound(bb::linear_bound, ll::ll_zeros, pr::gaussian_prior, gs::mbsampler_list, mstate::zz_state)
     d = length(mstate.ξ)
-    bb.a_xi = abs.(mstate.ξ-get_μ(pr))./get_σ2(pr)
-    bb.b_xi = (mstate.α)./get_σ2(pr)
+    bb.a = abs.(mstate.ξ-get_μ(pr))./get_σ2(pr)
+    bb.b = (mstate.α)./get_σ2(pr)
 end
+"""
 
 
 #--------------------------------------------------------------------------------------------------------
@@ -678,10 +669,10 @@ end
 
 
 linear_bound(ll::ll_model, pr::gaussian_prior, gs_list::sampler_list, mstate::zz_state) = 
-linear_bound(build_linear_bound(ll, pr, gs_list, mstate)..., zeros(size(ll.X,1)), zeros(size(ll.X,1))) 
+linear_bound(build_linear_bound(ll, pr, gs_list, mstate), zeros(size(ll.X,1)), zeros(size(ll.X,1))) 
 
 function evaluate_bound(bb::linear_bound, t, k)
-    return bb.a_fixed[k] + bb.a_xi[k] + t * (bb.b_fixed[k] + bb.b_xi[k])  
+    return bb.a[k] + t*bb.b[k]
 end
 
 
@@ -734,7 +725,7 @@ end
 function get_event_time(mysampler::zz_sampler, mstate::zz_state, model::model)
     
     update_bound(mysampler.bb, model.ll, model.pr, mysampler.gs, mstate)
-    a, b = mysampler.bb.a_fixed + mysampler.bb.a_xi, mysampler.bb.b_fixed + mysampler.bb.b_xi
+    a, b = mysampler.bb.a, mysampler.bb.b
     event_times = [get_event_time(a[i], b[i]) for i in 1:d]  
     τ, i0 = findmin(event_times) 
     mysampler.i0 = i0
@@ -762,11 +753,11 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ,
         L = 10
         
         #update speed: 
-        if adapt_speed & (sum(mstate.n_bounces)%L == 0) & (minimum(mstate.n_bounces) >= 1)
+        if adapt_speed & (sum(mstate.n_bounces)%L == 0)  & (sum(mstate.n_bounces) >= 1)
             segment_idx = Int64(sum(mstate.n_bounces)/L) 
             est_segment = mstate.n_bounces ./ mstate.α
             est_segment /= sum(est_segment)
-            mstate.est_rate = ((segment_idx-1)*mstate.est_rate + est_segment)/segment_idx
+            mstate.est_rate = (segment_idx*mstate.est_rate + est_segment)/(segment_idx+1)
             mstate.α = 1./mstate.est_rate
             
             #if minimum(mstate.n_bounces) >= 5 
