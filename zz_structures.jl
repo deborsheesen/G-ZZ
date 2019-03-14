@@ -40,7 +40,7 @@ mutable struct zz_state
     ξ::Array{Float64}
     θ::Array{Float64}
     α::Array{Float64}
-    t_last::Array{Float64}
+    n_bounces::Array{Int64}
 end
 
 
@@ -53,15 +53,22 @@ end
 function feed(outp::outputscheduler, state::zz_state, prior::prior_model, time::Float64, bounce::Bool)
     
     if add_output(outp.opf, state, time, bounce)
+        outp.opf.tcounter +=1 
         if outp.opf.tcounter > size(outp.opf.bt_skeleton,2)
             outp.opf.xi_skeleton = extend_skeleton_points(outp.opf.xi_skeleton, outp.opf.size_increment)
             outp.opf.bt_skeleton = extend_skeleton_points(outp.opf.bt_skeleton, outp.opf.size_increment)
             outp.opf.hyper_skeleton = extend_skeleton_points(outp.opf.hyper_skeleton, outp.opf.size_increment)
+            outp.opf.alpha_skeleton = extend_skeleton_points(outp.opf.alpha_skeleton, outp.opf.size_increment)
         end
-        outp.opf.xi_skeleton[:,opf.tcounter] = compress_xi(outp.opf, state.ξ)
-        outp.opf.bt_skeleton[:,opf.tcounter] = time
-        outp.opf.hyper_skeleton[:,opf.tcounter] = get_hyperparams(prior)
-        outp.opf.tcounter +=1 
+        outp.opf.xi_skeleton[:,outp.opf.tcounter] = compress_xi(outp.opf, state.ξ)
+        outp.opf.bt_skeleton[:,outp.opf.tcounter] = time
+        outp.opf.hyper_skeleton[:,outp.opf.tcounter] = get_hyperparams(prior)
+        outp.opf.alpha_skeleton[:,outp.opf.tcounter] = state.α
+        
+        outp.opf.theta = state.θ
+        outp.opf.n_bounces = state.n_bounces
+        
+        
     end
     outp.opt = eval_stopping(outp.opt, state.ξ, time, bounce)
     return outp
@@ -93,9 +100,10 @@ end
 #--------------------------------------------------------------------------------------------------------
 
 function finalize(opf::outputformater)
-    opf.xi_skeleton = opf.xi_skeleton[:,1:opf.tcounter-1]
-    opf.bt_skeleton = opf.bt_skeleton[:,1:opf.tcounter-1]
-    opf.hyper_skeleton = opf.hyper_skeleton[:,1:opf.tcounter-1]
+    opf.xi_skeleton = opf.xi_skeleton[:,1:opf.tcounter]
+    opf.bt_skeleton = opf.bt_skeleton[:,1:opf.tcounter]
+    opf.hyper_skeleton = opf.hyper_skeleton[:,1:opf.tcounter]
+    opf.alpha_skeleton = opf.alpha_skeleton[:,1:opf.tcounter]
 end
 
 mutable struct projopf <:outputformater
@@ -103,32 +111,34 @@ mutable struct projopf <:outputformater
     xi_skeleton::Array{Float64}
     bt_skeleton::Array{Float64}
     theta::Array{Float64} 
-    alpha::Array{Float64}
-    t_last::Array{Float64}
+    alpha_skeleton::Array{Float64}
+    n_bounces::Array{Int64}
     hyper_skeleton::Array{Float64}
     hyper_size::Int64
     tcounter::Int64
     size_increment::Int64
     A::Array{Float64}
     d_out::Int64
+    adapt_speed::Bool
 end
 
-projopf(A, size_increment, hyper_size) = projopf(built_projopf(A, size_increment, hyper_size)...)
-projopf(A, size_increment) = projopf(built_projopf(A, size_increment, 0)...)
+projopf(A::Array{Float64}, size_increment::Int64, adapt_speed::Bool, hyper_size::Int64) = projopf(built_projopf(A, size_increment, adapt_speed, hyper_size)...)
+projopf(A::Array{Float64}, size_increment::Int64, adapt_speed::Bool) = projopf(built_projopf(A, size_increment, adapt_speed, 0)...)
+projopf(A::Array{Float64}, size_increment::Int64) = projopf(A, size_increment, false)
 
-zz_state(opf::projopf) = zz_state(opf.xi_skeleton[:,opf.tcounter+1], opf.theta, opf.alpha, opf.t_last)
+zz_state(opf::projopf) = zz_state(opf.xi_skeleton[:,opf.tcounter], opf.theta, opf.alpha_skeleton[:,opf.tcounter], opf.n_bounces)
 
 
-function built_projopf(A, size_increment, hyper_size)
+function built_projopf(A, size_increment, adapt_speed, hyper_size)
     d_out, d = size(A)
     xi_skeleton = zeros(d, 10*size_increment)
     bt_skeleton = zeros(1, 10*size_increment)
-    tcounter = 2
+    tcounter = 1
     theta = ones(d)
     hyper_skeleton = ones(hyper_size, 10*size_increment)
-    alpha = ones(d)
-    t_last = zeros(d)
-    return d, xi_skeleton, bt_skeleton, theta, alpha, t_last, hyper_skeleton, hyper_size, tcounter, size_increment, A, d_out
+    alpha_skeleton = ones(d, 10*size_increment)
+    n_bounces = zeros(d)
+    return d, xi_skeleton, bt_skeleton, theta, alpha_skeleton, n_bounces, hyper_skeleton, hyper_size, tcounter, size_increment, A, d_out, adapt_speed
 end
 
 function compress_xi(outp::projopf, xi)
@@ -369,10 +379,6 @@ function update_bound(bb::linear_bound, ll::ll_logistic_sp, pr::gaussian_prior, 
     bb.a_xi = pos(mstate.θ.*mstate.α.*gs.gradient_log_posterior_root_sum) + mstate.α*norm_ .* (bb.const_ + 1.0 ./get_σ2(pr))
     bb.b_xi = mstate.α*norm(mstate.α) .* (bb.const_ + 1.0 ./get_σ2(pr))
     
-    #d = length(ξ0)
-    #norm_ = norm(gs.root-mstate.ξ)
-    #bb.a_xi = pos(mstate.θ*mstate.α*gs.gradient_log_posterior_root_sum) .+ norm_*(gs.C + 1.0 ./get_σ2(pr))
-    #bb.b_xi = norm(mstate.α)*(gs.C + 1.0 ./get_σ2(pr))
 end
 
 
@@ -418,12 +424,9 @@ function gradient(pp::prior_model, ξ)
     return [partial_derivative(pp, ξ, k) for k in 1:d]
 end
 
-
 function log_prior(pp::gaussian_prior, ξ) 
     return -0.5*sum( (ξ - get_μ(pp)).^2 ./ get_σ2(pp) )
 end
-
-
 
 
 function partial_derivative(pp::gaussian_prior, ξ, k) 
@@ -719,7 +722,7 @@ function evolve_path(mysampler::block_gibbs_sampler, mstate::zz_state, τ)
     mstate.ξ += τ*mstate.θ.*mstate.α   
 end
 
-function update_state(mysampler::block_gibbs_sampler, mstate::zz_state, model::model, τ)
+function update_state(mysampler::block_gibbs_sampler, mstate::zz_state, model::model, τ, adapt_speed=false)
     block_Gibbs_update_hyperparams(model.pr, mstate.ξ)
     return true
 end
@@ -743,7 +746,7 @@ function evolve_path(mysampler::zz_sampler, mstate::zz_state, τ)
     mstate.ξ += τ*mstate.θ.*mstate.α 
 end
 
-function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
+function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ, adapt_speed=false)
     mb = gsample(mysampler.gs.mbs[mysampler.i0])
     rate_estimated = estimate_rate(model, mstate, mysampler.i0, mb, mysampler.gs)
     
@@ -755,9 +758,16 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
     if rand() < alpha
         mstate.θ[mysampler.i0] *= -1
         bounce = true
+        mstate.n_bounces[mysampler.i0] += 1
+        
         #update speed: 
-        #mstate.α[mysampler.i0] = 
-        #mstate.t_last[mysampler.i0] = τ
+        if adapt_speed 
+            if minimum(mstate.n_bounces) >= 5 
+               mstate.α ./=  (mstate.n_bounces).^0.35
+            end
+            mstate.α /= mean(mstate.α)
+        end
+        #mstate.α += randn(d)/10
     end 
     return bounce
 end
@@ -768,9 +778,9 @@ function ZZ_sample(model::model, outp::outputscheduler)
     d, Nobs = size(model.ll.X) 
     mb_size = gs.mbs[1].mb_size
 
-    ξ = copy(outp.opf.xi_skeleton[:,outp.opf.tcounter-1])
+    ξ = copy(outp.opf.xi_skeleton[:,outp.opf.tcounter])
     θ = outp.opf.theta
-    t = copy(outp.opf.bt_skeleton[outp.opf.tcounter-1])
+    t = copy(outp.opf.bt_skeleton[outp.opf.tcounter])
     
     bb = linear_bound(model.ll, model.pr, gs)
     counter = 1
@@ -784,7 +794,7 @@ function ZZ_sample(model::model, outp::outputscheduler)
         #-------------------------------------
         t += τ 
         evolve_path(mysampler,mstate,τ)
-        update_state(mysampler,mstate,τ)
+        update_state(mysampler, mstate, τ)
         
         outp = feed(outp, ξ, θ, t, bounce)
         
@@ -803,7 +813,7 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
     K = length(blocksampler)
     counter = 1
 
-    t = copy(outp.opf.bt_skeleton[outp.opf.tcounter-1])
+    t = copy(outp.opf.bt_skeleton[outp.opf.tcounter])
     mstate = zz_state(outp.opf)
     
 #-------------------------------------------------------------------------
@@ -817,7 +827,7 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
         t += τ 
         
         evolve_path(blocksampler[k0], mstate, τ)
-        bounce = update_state(blocksampler[k0], mstate, model, τ)
+        bounce = update_state(blocksampler[k0], mstate, model, τ, outp.opf.adapt_speed)
         
         #outp = feed(outp, mstate, model.pr, bounce)
         outp = feed(outp::outputscheduler, mstate::zz_state, model.pr::prior_model, t, bounce)
@@ -972,14 +982,14 @@ function GZZ_sample(m::model,
     @showprogress for t in 1:T_gibbs
         outp.opt = maxa_opt(n_gibbs)
         ZZ_sample(m, outp, gs_list)
-        ξ = outp.opf.xi_skeleton[:,outp.opf.tcounter-1]
+        ξ = outp.opf.xi_skeleton[:,outp.opf.tcounter]
         if update_hyper
             block_Gibbs_update_hyperparams(m.pr, ξ)  # this updates my_model; to check, run:
     #     print(my_model.pr, "\n")
         end
-        out_samples.xi_samples[:,t] = outp.opf.xi_skeleton[:,outp.opf.tcounter-1]
+        out_samples.xi_samples[:,t] = outp.opf.xi_skeleton[:,outp.opf.tcounter]
         out_samples.hyper_samples[t] = deepcopy(m.pr)
-        out_samples.zz_nbounces[t] = outp.opf.tcounter-1
+        out_samples.zz_nbounces[t] = outp.opf.tcounter
     end
     finalize(outp.opf)
 end
