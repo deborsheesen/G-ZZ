@@ -41,6 +41,7 @@ mutable struct zz_state
     θ::Array{Float64}
     α::Array{Float64}
     n_bounces::Array{Int64}
+    est_rate::Array{Float64}
 end
 
 
@@ -67,8 +68,6 @@ function feed(outp::outputscheduler, state::zz_state, prior::prior_model, time::
         
         outp.opf.theta = state.θ
         outp.opf.n_bounces = state.n_bounces
-        
-        
     end
     outp.opt = eval_stopping(outp.opt, state.ξ, time, bounce)
     return outp
@@ -126,7 +125,7 @@ projopf(A::Array{Float64}, size_increment::Int64, adapt_speed::Bool, hyper_size:
 projopf(A::Array{Float64}, size_increment::Int64, adapt_speed::Bool) = projopf(built_projopf(A, size_increment, adapt_speed, 0)...)
 projopf(A::Array{Float64}, size_increment::Int64) = projopf(A, size_increment, false)
 
-zz_state(opf::projopf) = zz_state(opf.xi_skeleton[:,opf.tcounter], opf.theta, opf.alpha_skeleton[:,opf.tcounter], opf.n_bounces)
+zz_state(opf::projopf) = zz_state(opf.xi_skeleton[:,opf.tcounter], opf.theta, opf.alpha_skeleton[:,opf.tcounter], opf.n_bounces, zeros(length(opf.theta)))
 
 
 function built_projopf(A, size_increment, adapt_speed, hyper_size)
@@ -760,14 +759,21 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ,
         bounce = true
         mstate.n_bounces[mysampler.i0] += 1
         
+        L = 10
+        
         #update speed: 
-        if adapt_speed 
-            if minimum(mstate.n_bounces) >= 5 
-               mstate.α ./=  (mstate.n_bounces).^0.35
-            end
-            mstate.α /= mean(mstate.α)
+        if adapt_speed & (sum(mstate.n_bounces)%L == 0) & (minimum(mstate.n_bounces) >= 1)
+            segment_idx = Int64(sum(mstate.n_bounces)/L) 
+            est_segment = mstate.n_bounces ./ mstate.α
+            est_segment /= sum(est_segment)
+            mstate.est_rate = ((segment_idx-1)*mstate.est_rate + est_segment)/segment_idx
+            mstate.α = 1./mstate.est_rate
+            
+            #if minimum(mstate.n_bounces) >= 5 
+            #   mstate.α ./=  (mstate.n_bounces).^0.35
+            #end
+            #mstate.α /= mean(mstate.α)
         end
-        #mstate.α += randn(d)/10
     end 
     return bounce
 end
