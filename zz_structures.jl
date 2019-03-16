@@ -44,9 +44,11 @@ end
 
 
 mutable struct zz_sampler <:msampler
-   i0::Int64
-   gs::sampler_list
-   bb::bound
+    i0::Int64
+    gs::sampler_list
+    bb::bound
+    L::Int64
+    adapt_speed::Bool
 end
 
 function feed(outp::outputscheduler, state::zz_state, prior::prior_model, time::Float64, bounce::Bool)
@@ -87,7 +89,7 @@ function compress_xi(opf::outputformater, xi)
    return xi 
 end
 
-function extend_skeleton_points(skeleton_points, extension=100)
+function extend_skeleton_points(skeleton_points, extension=1000)
     m, n = size(skeleton_points)
     skeleton_new = zeros(m, n+extension)
     skeleton_new[:,1:n] = skeleton_points
@@ -116,17 +118,15 @@ mutable struct projopf <:outputformater
     size_increment::Int64
     A::Array{Float64}
     d_out::Int64
-    adapt_speed::Bool
 end
 
-projopf(A::Array{Float64}, size_increment::Int64, adapt_speed::Bool, hyper_size::Int64) = projopf(built_projopf(A, size_increment, adapt_speed, hyper_size)...)
-projopf(A::Array{Float64}, size_increment::Int64, adapt_speed::Bool) = projopf(built_projopf(A, size_increment, adapt_speed, 0)...)
-projopf(A::Array{Float64}, size_increment::Int64) = projopf(A, size_increment, false)
+projopf(A::Array{Float64}, size_increment::Int64, hyper_size::Int64) = projopf(built_projopf(A, size_increment, hyper_size)...)
+projopf(A::Array{Float64}, size_increment::Int64) = projopf(built_projopf(A, size_increment, 0)...)
 
 zz_state(opf::projopf) = zz_state(opf.xi_skeleton[:,opf.tcounter], opf.theta, opf.alpha_skeleton[:,opf.tcounter], opf.n_bounces, ones(length(opf.theta)))
 
 
-function built_projopf(A, size_increment, adapt_speed, hyper_size)
+function built_projopf(A, size_increment, hyper_size)
     d_out, d = size(A)
     xi_skeleton = zeros(d, 10*size_increment)
     bt_skeleton = zeros(1, 10*size_increment)
@@ -135,7 +135,7 @@ function built_projopf(A, size_increment, adapt_speed, hyper_size)
     hyper_skeleton = ones(hyper_size, 10*size_increment)
     alpha_skeleton = ones(d, 10*size_increment)
     n_bounces = zeros(d)
-    return d, xi_skeleton, bt_skeleton, theta, alpha_skeleton, n_bounces, hyper_skeleton, hyper_size, tcounter, size_increment, A, d_out, adapt_speed
+    return d, xi_skeleton, bt_skeleton, theta, alpha_skeleton, n_bounces, hyper_skeleton, hyper_size, tcounter, size_increment, A, d_out
 end
 
 function compress_xi(outp::projopf, xi)
@@ -582,8 +582,11 @@ mutable struct NG_prior <:gaussian_prior
     Ψ::Array{Float64}
     λ::Float64
     γ2::Float64
-    M::Float64    
+    M::Float64
+    λ_scale::Float64
 end
+
+NG_prior(d, σ02) = NG_prior(d, σ02, ones(d-1), 1., 1., 1., 1.)
 
 function get_σ2(prior::NG_prior)
     return vcat(prior.σ02, prior.Ψ)
@@ -601,7 +604,7 @@ function block_Gibbs_update_hyperparams(prior::NG_prior, ξ)
         prior.Ψ[i] = @rget x
     end
     for i in 1:5 
-        z = rand(Normal())
+        z = prior.λ_scale*rand(Normal())
         λ_proposed = prior.λ*exp(z) 
         acceptance_ratio = (exp(-(λ_proposed-prior.λ))
                             *(gamma(prior.λ)/gamma(λ_proposed))^(prior.d-1)
@@ -712,7 +715,7 @@ function evolve_path(mysampler::block_gibbs_sampler, mstate::zz_state, τ)
     mstate.ξ += τ*mstate.θ.*mstate.α   
 end
 
-function update_state(mysampler::block_gibbs_sampler, mstate::zz_state, model::model, τ, adapt_speed=false)
+function update_state(mysampler::block_gibbs_sampler, mstate::zz_state, model::model, τ)
     block_Gibbs_update_hyperparams(model.pr, mstate.ξ)
     return true
 end
@@ -736,7 +739,7 @@ function evolve_path(mysampler::zz_sampler, mstate::zz_state, τ)
     mstate.ξ += τ*mstate.θ.*mstate.α 
 end
 
-function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ, adapt_speed=false)
+function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
     mb = gsample(mysampler.gs.mbs[mysampler.i0])
     rate_estimated = estimate_rate(model, mstate, mysampler.i0, mb, mysampler.gs)
     
@@ -750,11 +753,11 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ,
         bounce = true
         mstate.n_bounces[mysampler.i0] += 1
         
-        L = 10
+        L = 1
         
         #update speed: 
-        if adapt_speed & (sum(mstate.n_bounces)%L == 0)  & (sum(mstate.n_bounces) >= 1)
-            segment_idx = Int64(sum(mstate.n_bounces)/L) 
+        if mysampler.adapt_speed & (sum(mstate.n_bounces)%mysampler.L == 0)  & (sum(mstate.n_bounces) >= 1)
+            segment_idx = Int64(sum(mstate.n_bounces)/mysampler.L) 
             est_segment = mstate.n_bounces ./ mstate.α
             est_segment /= sum(est_segment)
             mstate.est_rate = (segment_idx*mstate.est_rate + est_segment)/(segment_idx+1)
@@ -815,6 +818,7 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
     
 #-------------------------------------------------------------------------
     # run sampler:
+    start = time()
     bounce = false
     while(is_running(outp.opt))
                 
@@ -824,7 +828,7 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
         t += τ 
         
         evolve_path(blocksampler[k0], mstate, τ)
-        bounce = update_state(blocksampler[k0], mstate, model, τ, outp.opf.adapt_speed)
+        bounce = update_state(blocksampler[k0], mstate, model, τ)
         
         #outp = feed(outp, mstate, model.pr, bounce)
         outp = feed(outp::outputscheduler, mstate::zz_state, model.pr::prior_model, t, bounce)
@@ -832,6 +836,9 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
         counter += 1
         if counter%10_000 == 0 
             gc()
+        end
+        if counter % (outp.opt.max_attempts/10) == 0 
+            print(Int64(100*counter/(outp.opt.max_attempts)), "% attempts in ", round((time()-start)/60, 2), " mins \n")
         end
     end
     finalize(outp.opf)
