@@ -256,20 +256,20 @@ end
 
 #------------------------- Bounds, no control variates -----------------------------# 
 
-function build_linear_bound(ll::ll_logistic, pr::gaussian_prior, gs::mbsampler_list, mstate::zz_state)
+function build_linear_bound(ll::ll_logistic, pr::gaussian_prior, gs::mbsampler_list)
     d, Nobs = size(ll.X)
     const_ = [maximum(abs.(ll.X[i,:]./get_weights(gs.mbs[i],1:Nobs))) for i in 1:d]
     return const_
 end
 
 function update_bound(bb::linear_bound, ll::ll_logistic, pr::gaussian_prior, gs::mbsampler_list, mstate::zz_state)
-    bb.a = mstate.α .* (bb.const_ + abs.(mstate.ξ-get_μ(pr))./get_σ2(pr))
-    bb.b = (mstate.α)./get_σ2(pr)
+    bb.a = mstate.α .* (bb.const_ + abs.(mstate.ξ-get_μ(pr))./ get_σ2(pr))
+    bb.b = mstate.α ./ get_σ2(pr)
 end
 
 #------------------------- Bounds, with control variates -----------------------------# 
 
-function build_linear_bound(ll::ll_logistic, pr::gaussian_prior, gs::cvmbsampler_list, mstate::zz_state)
+function build_linear_bound(ll::ll_logistic, pr::gaussian_prior, gs::cvmbsampler_list)
     
     d, Nobs = size(ll.X)
     C_lipschitz = zeros(d, Nobs)
@@ -324,7 +324,7 @@ end
 #-------------------- Bounds, no control variates + SPARSE -----------------------------# 
 # Fix this::
 
-function build_linear_bound(ll::ll_logistic_sp, pr::gaussian_prior, gs::mbsampler_list, mstate::zz_state)
+function build_linear_bound(ll::ll_logistic_sp, pr::gaussian_prior, gs::mbsampler_list)
     # Redefine 
     d, Nobs = size(ll.X)
     
@@ -344,7 +344,7 @@ end
 
 #-------------------- Bounds, with control variates + SPARSE -----------------------------# 
 
-function build_linear_bound(ll::ll_logistic_sp, pr::gaussian_prior, gs::cvmbsampler_list, mstate::zz_state)
+function build_linear_bound(ll::ll_logistic_sp, pr::gaussian_prior, gs::cvmbsampler_list)
     
     d, Nobs = size(ll.X)
     C_lipschitz = spzeros(d, Nobs)
@@ -390,7 +390,7 @@ end
 
 """
 To fix:
-function build_linear_bound(ll::ll_zeros, pr::gaussian_prior, gs::mbsampler_list, mstate::zz_state)
+function build_linear_bound(ll::ll_zeros, pr::gaussian_prior, gs::mbsampler_list)
     d, Nobs = size(ll.X)
     a_fixed = zeros(d)
     b_fixed = zeros(d)
@@ -584,9 +584,10 @@ mutable struct NG_prior <:gaussian_prior
     γ2::Float64
     M::Float64
     λ_scale::Float64
+    λ_attempts::Int64
 end
 
-NG_prior(d, σ02) = NG_prior(d, σ02, ones(d-1), 1., 1., 1., 1.)
+NG_prior(d, σ02) = NG_prior(d, σ02, ones(d-1), 1., 1., 1., 1., 100)
 
 function get_σ2(prior::NG_prior)
     return vcat(prior.σ02, prior.Ψ)
@@ -603,7 +604,7 @@ function block_Gibbs_update_hyperparams(prior::NG_prior, ξ)
         reval("x=rgig(n=1, lambda=$(prior.λ-1/2), chi=$(1/prior.γ2), psi=$xi)")
         prior.Ψ[i] = @rget x
     end
-    for i in 1:5 
+    for i in 1:prior.λ_attempts
         z = prior.λ_scale*rand(Normal())
         λ_proposed = prior.λ*exp(z) 
         acceptance_ratio = (exp(-(λ_proposed-prior.λ))
@@ -626,6 +627,7 @@ function get_hyperparams(prior::NG_prior)
     hyperparams[1:prior.d-1] = prior.Ψ
     hyperparams[(prior.d-1)+1] = prior.λ
     hyperparams[(prior.d-1)+1+1] = prior.γ2
+    return hyperparams
 end
 
 function set_hyperparams(prior::NG_prior, hyperparams::Array{Float64})
@@ -671,8 +673,8 @@ end
 #--------------------------------------------------------------------------------------------------------
 
 
-linear_bound(ll::ll_model, pr::gaussian_prior, gs_list::sampler_list, mstate::zz_state) = 
-linear_bound(build_linear_bound(ll, pr, gs_list, mstate), zeros(size(ll.X,1)), zeros(size(ll.X,1))) 
+linear_bound(ll::ll_model, pr::gaussian_prior, gs_list::sampler_list) = 
+linear_bound(build_linear_bound(ll, pr, gs_list), zeros(size(ll.X,1)), zeros(size(ll.X,1))) 
 
 function evaluate_bound(bb::linear_bound, t, k)
     return bb.a[k] + t*bb.b[k]
@@ -712,11 +714,12 @@ function get_event_time(mysampler::block_gibbs_sampler, mstate::zz_state, model:
 end
 
 function evolve_path(mysampler::block_gibbs_sampler, mstate::zz_state, τ)
-    mstate.ξ += τ*mstate.θ.*mstate.α   
+    mstate.ξ += τ*mstate.θ.*mstate.α
 end
 
 function update_state(mysampler::block_gibbs_sampler, mstate::zz_state, model::model, τ)
     block_Gibbs_update_hyperparams(model.pr, mstate.ξ)
+    # update bound:
     return true
 end
 
@@ -736,7 +739,7 @@ function get_event_time(mysampler::zz_sampler, mstate::zz_state, model::model)
 end
 
 function evolve_path(mysampler::zz_sampler, mstate::zz_state, τ)
-    mstate.ξ += τ*mstate.θ.*mstate.α 
+    mstate.ξ += τ * mstate.θ .* mstate.α 
 end
 
 function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
@@ -745,7 +748,7 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
     
     alpha = (rate_estimated)/evaluate_bound(mysampler.bb, τ, mysampler.i0)
     if alpha > 1
-        print("alpha: ",alpha,"\n")
+        print("alpha: ", alpha, "\n")
     end
     bounce = false
     if rand() < alpha
@@ -770,41 +773,6 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
         end
     end 
     return bounce
-end
-
-
-function ZZ_sample(model::model, outp::outputscheduler)
-
-    d, Nobs = size(model.ll.X) 
-    mb_size = gs.mbs[1].mb_size
-
-    ξ = copy(outp.opf.xi_skeleton[:,outp.opf.tcounter])
-    θ = outp.opf.theta
-    t = copy(outp.opf.bt_skeleton[outp.opf.tcounter])
-    
-    bb = linear_bound(model.ll, model.pr, gs)
-    counter = 1
-    
-#-------------------------------------------------------------------------
-    # run sampler:
-    bounce = false
-    while(is_running(outp.opt))
-        
-        τ = get_event_time(mysampler,mstate)
-        #-------------------------------------
-        t += τ 
-        evolve_path(mysampler,mstate,τ)
-        update_state(mysampler, mstate, τ)
-        
-        outp = feed(outp, ξ, θ, t, bounce)
-        
-        counter += 1
-        if counter%100_000 == 0 
-            gc()
-        end
-    end
-    #finalize(outp.opf)
-    return outp
 end
 
 
@@ -844,6 +812,42 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
     finalize(outp.opf)
     return outp
 end
+
+"""
+function ZZ_sample(model::model, outp::outputscheduler)
+
+    d, Nobs = size(model.ll.X) 
+    mb_size = gs.mbs[1].mb_size
+
+    ξ = copy(outp.opf.xi_skeleton[:,outp.opf.tcounter])
+    θ = outp.opf.theta
+    t = copy(outp.opf.bt_skeleton[outp.opf.tcounter])
+    
+    bb = linear_bound(model.ll, model.pr, gs)
+    counter = 1
+    
+#-------------------------------------------------------------------------
+    # run sampler:
+    bounce = false
+    while(is_running(outp.opt))
+        
+        τ = get_event_time(mysampler,mstate)
+        #-------------------------------------
+        t += τ 
+        evolve_path(mysampler,mstate,mysampler,τ)
+        update_state(mysampler, mstate, τ)
+        
+        outp = feed(outp, ξ, θ, t, bounce)
+        
+        counter += 1
+        if counter%100_000 == 0 
+            gc()
+        end
+    end
+    #finalize(outp.opf)
+    return outp
+end
+"""
 
 
 
@@ -960,6 +964,11 @@ end
 #--------------------------------------------------------------------------------------------
 # GIBBS ZIG-ZAG STUFF
 #--------------------------------------------------------------------------------------------
+
+mutable struct gzz_state
+    mzzstate::zz_state
+    prior::gaussian_prior
+end
 
 
 mutable struct gzz_samples
