@@ -64,7 +64,7 @@ function feed(outp::outputscheduler, state::zz_state, prior::prior_model, time::
         outp.opf.xi_skeleton[:,outp.opf.tcounter] = compress_xi(outp.opf, state.ξ)
         outp.opf.bt_skeleton[:,outp.opf.tcounter] = time
         outp.opf.hyper_skeleton[:,outp.opf.tcounter] = get_hyperparams(prior)
-        outp.opf.alpha_skeleton[:,outp.opf.tcounter] = state.α
+        outp.opf.alpha_skeleton[:,outp.opf.tcounter] = compress_xi(outp.opf, state.α)
         
         outp.opf.theta = state.θ
         outp.opf.n_bounces = state.n_bounces
@@ -116,24 +116,24 @@ mutable struct projopf <:outputformater
     hyper_size::Int64
     tcounter::Int64
     size_increment::Int64
-    A::Array{Float64}
+    A
     d_out::Int64
 end
 
-projopf(A::Array{Float64}, size_increment::Int64, hyper_size::Int64) = projopf(built_projopf(A, size_increment, hyper_size)...)
-projopf(A::Array{Float64}, size_increment::Int64) = projopf(built_projopf(A, size_increment, 0)...)
+projopf(A, size_increment::Int64, hyper_size::Int64) = projopf(built_projopf(A, size_increment, hyper_size)...)
+projopf(A, size_increment::Int64) = projopf(built_projopf(A, size_increment, 0)...)
 
 zz_state(opf::projopf) = zz_state(opf.xi_skeleton[:,opf.tcounter], opf.theta, opf.alpha_skeleton[:,opf.tcounter], opf.n_bounces, ones(length(opf.theta)))
 
 
 function built_projopf(A, size_increment, hyper_size)
     d_out, d = size(A)
-    xi_skeleton = zeros(d, 10*size_increment)
+    xi_skeleton = zeros(d_out, 10*size_increment)
     bt_skeleton = zeros(1, 10*size_increment)
     tcounter = 1
     theta = ones(d)
     hyper_skeleton = ones(hyper_size, 10*size_increment)
-    alpha_skeleton = ones(d, 10*size_increment)
+    alpha_skeleton = ones(d_out, 10*size_increment)
     n_bounces = zeros(d)
     return d, xi_skeleton, bt_skeleton, theta, alpha_skeleton, n_bounces, hyper_skeleton, hyper_size, tcounter, size_increment, A, d_out
 end
@@ -813,41 +813,40 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
     return outp
 end
 
-"""
-function ZZ_sample(model::model, outp::outputscheduler)
 
+function ZZ_sample(model::model, outp::outputscheduler, mysampler::zz_sampler, mstate::zz_state)
+    
     d, Nobs = size(model.ll.X) 
-    mb_size = gs.mbs[1].mb_size
-
-    ξ = copy(outp.opf.xi_skeleton[:,outp.opf.tcounter])
-    θ = outp.opf.theta
     t = copy(outp.opf.bt_skeleton[outp.opf.tcounter])
     
-    bb = linear_bound(model.ll, model.pr, gs)
     counter = 1
     
 #-------------------------------------------------------------------------
     # run sampler:
     bounce = false
+    start = time()
     while(is_running(outp.opt))
         
-        τ = get_event_time(mysampler,mstate)
+        τ = get_event_time(mysampler, mstate, model)
         #-------------------------------------
         t += τ 
-        evolve_path(mysampler,mstate,mysampler,τ)
-        update_state(mysampler, mstate, τ)
+        evolve_path(mysampler, mstate, τ)
+        bounce = update_state(mysampler, mstate, model, τ)
         
-        outp = feed(outp, ξ, θ, t, bounce)
+        outp = feed(outp, mstate, model.pr, t, bounce)
         
         counter += 1
         if counter%100_000 == 0 
             gc()
         end
+        if counter % (outp.opt.max_attempts/10) == 0 
+            print(Int64(100*counter/(outp.opt.max_attempts)), "% attempts in ", round((time()-start)/60, 2), " mins \n")
+        end
     end
-    #finalize(outp.opf)
+    finalize(outp.opf)
     return outp
 end
-"""
+
 
 
 
