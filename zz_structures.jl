@@ -529,7 +529,7 @@ mutable struct GDP_prior <:gaussian_prior
     η::Float64
     σ2::Float64
     a::Float64
-    b::Float64
+    b2::Float64
 end
 
 GDP_prior(d, σ02) = GDP_prior(d, σ02, ones(d-1), ones(d-1), 1., 1., 1., 1., 1.)
@@ -548,7 +548,10 @@ function block_Gibbs_update_hyperparams(prior::GDP_prior, ξ)
     prior.λ = [rand(Gamma(prior.α+1, abs(ξ[i+1])/σ + prior.η)) for i in 1:prior.d-1]
     τ_inv = [rand(InverseGaussian(prior.λ[i]*σ/abs(ξ[i+1]), prior.λ[i]^2)) for i in 1:prior.d-1]
     prior.τ = 1./τ_inv
-    prior.σ2  = rand(InverseGamma(prior.a+prior.d/2, prior.b + 0.5*sum(ξ[2:end].^2 ./ prior.τ) ))
+    #prior.σ2  = rand(InverseGamma(prior.a+prior.d/2, prior.b + 0.5*sum(ξ[2:end].^2 ./ prior.τ) ))
+    a = prior.a + prior.d-1
+    b2 = (prior.a*prior.b2 + sum(ξ[2:end].^2))/(prior.a+prior.d-1)
+    prior.σ2 = rand(InverseGamma(a/2,a*b2/2))
     return prior
 end
 
@@ -719,7 +722,6 @@ end
 
 function update_state(mysampler::block_gibbs_sampler, mstate::zz_state, model::model, τ)
     block_Gibbs_update_hyperparams(model.pr, mstate.ξ)
-    # update bound:
     return true
 end
 
@@ -732,7 +734,7 @@ function get_event_time(mysampler::zz_sampler, mstate::zz_state, model::model)
     
     update_bound(mysampler.bb, model.ll, model.pr, mysampler.gs, mstate)
     a, b = mysampler.bb.a, mysampler.bb.b
-    event_times = [get_event_time(a[i], b[i]) for i in 1:d]  
+    event_times = [get_event_time(a[i], b[i]) for i in 1:length(a)]  
     τ, i0 = findmin(event_times) 
     mysampler.i0 = i0
     return τ
@@ -765,6 +767,7 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
             est_segment /= sum(est_segment)
             mstate.est_rate = (segment_idx*mstate.est_rate + est_segment)/(segment_idx+1)
             mstate.α = 1./mstate.est_rate
+            
             
             #if minimum(mstate.n_bounces) >= 5 
             #   mstate.α ./=  (mstate.n_bounces).^0.35
