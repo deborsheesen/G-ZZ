@@ -27,7 +27,7 @@ y = [rand(Binomial(1, 1/(1+exp(-ξ_true'X[:,j]))), 1)[1] + 0. for j in 1:Nobs];
 save("GZZ_data5.jld", "X", X, "y", y, "xi_true", ξ_true)
 """
 
-function run_shrpr(dat, mb_size, max_attempts, hyp_λ, n_samples, shrpr, maxlag=100) 
+function run_shrpr(dat, mb_size, max_attempts, hyp_λ, n_samples, shrpr, maxlag) 
     X = load(dat, "X")
     y = load(dat, "y")
     ξ_true = load(dat, "xi_true");
@@ -38,7 +38,9 @@ function run_shrpr(dat, mb_size, max_attempts, hyp_λ, n_samples, shrpr, maxlag=
         prior = HS_prior(d, σ02)
     elseif shrpr == "GDP" 
         prior = GDP_prior(d, σ02)
-    else 
+    elseif shrpr == "SS" 
+        prior = SS_prior(d, σ02)
+    else
         print("Error, prior type not recognised \n")
     end
             
@@ -90,7 +92,6 @@ function run_shrpr(dat, mb_size, max_attempts, hyp_λ, n_samples, shrpr, maxlag=
     outp = nothing 
     gc()
 
-    maxlag = 100
     acfs = zeros(d, maxlag)
     for i in 1:d 
         acfs[i,:] = acf(xi_samples[i,:], maxlag)

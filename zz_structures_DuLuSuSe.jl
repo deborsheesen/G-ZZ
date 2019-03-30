@@ -11,6 +11,7 @@ abstract type outputformater end
 abstract type ll_model end
 abstract type prior_model end
 abstract type msampler end
+abstract type gsamples end
     
 # Define abstract type for gaussian prior, sub-types of this abstract types must have attributes mu and sigma2  
 abstract type gaussian_prior <:prior_model end
@@ -40,7 +41,14 @@ mutable struct zz_state
     α::Array{Float64}
     n_bounces::Array{Int64}
     est_rate::Array{Float64}
+    T::Float64
+    mu::Array{Float64}
+    m2::Array{Float64} #second moment
+    ξ_lastbounce::Array{Float64}
+    T_lastbounce::Float64
 end
+
+zz_state(d) = zz_state(zeros(d), ones(d), ones(d), zeros(d), ones(d), 0., zeros(d), zeros(d), zeros(d), 0.)
 
 
 mutable struct zz_sampler <:msampler
@@ -48,8 +56,76 @@ mutable struct zz_sampler <:msampler
     gs::sampler_list
     bb::bound
     L::Int64
-    adapt_speed::Bool
+    adapt_speed::String
 end
+
+# ---------------------------------------------------------------------------------------------------
+# Functions to extract samples along the way
+# ---------------------------------------------------------------------------------------------------
+
+mutable struct zz_samples <:gsamples
+    samples::Array{Float64}
+    tcounter::Int64
+    lastsamplet::Float64
+    h::Float64
+end
+
+
+function set_zz_samples(mstate::zz_state) 
+    samples = zeros(length(mstate.ξ), 500)
+    samples[:,1] = mstate.ξ
+    return samples
+end
+
+zz_samples(mstate, h) = zz_samples(set_zz_samples(mstate), 1, 0., h)
+
+function extend(msamples::gsamples, newsample) 
+    msamples.tcounter += 1
+    if msamples.tcounter > size(msamples.samples,2) 
+        msamples.samples = extend_skeleton_points(msamples.samples, 500)
+    end
+    msamples.samples[:,msamples.tcounter] = newsample
+    msamples.lastsamplet += msamples.h
+end
+
+
+function feed(msamples::zz_samples, mstate::zz_state, time::Float64, τ::Float64) #time is the current time of the sampler
+    if (time + τ) > (msamples.lastsamplet + msamples.h)
+        # extract sample 
+        sampled_ξ = mstate.ξ + mstate.θ.*mstate.α*(msamples.lastsamplet+msamples.h-time)
+        extend(msamples, sampled_ξ) 
+    end
+end
+
+mutable struct hyp_samples <:gsamples
+    samples::Array{Float64}
+    tcounter::Int64
+    lastsamplet::Float64
+    h::Float64
+end
+
+
+function set_hyp_samples(prior::gaussian_prior) 
+    samples = zeros(hyperparam_size(prior), 500)
+    samples[:,1] = get_hyperparameters(prior)
+    return samples
+end
+
+hyp_samples(prior, h) = hyp_samples(set_hyp_samples(prior), 1, 0., h)
+
+
+function feed(msamples::hyp_samples, prior::gaussian_prior, time::Float64, τ::Float64)
+    if (time + τ) > (msamples.lastsamplet + msamples.h)
+        # extract sample 
+        sampled_hyp = get_hyperparameters(prior)
+        extend(msamples, sampled_hyp) 
+    end
+end
+
+function finalize(msamples::gsamples) 
+    msamples.samples = msamples.samples[:,1:msamples.tcounter]
+end
+        
 
 function feed(outp::outputscheduler, state::zz_state, prior::prior_model, time::Float64, bounce::Bool)
     
@@ -63,7 +139,7 @@ function feed(outp::outputscheduler, state::zz_state, prior::prior_model, time::
         end
         outp.opf.xi_skeleton[:,outp.opf.tcounter] = compress_xi(outp.opf, state.ξ)
         outp.opf.bt_skeleton[:,outp.opf.tcounter] = time
-        outp.opf.hyper_skeleton[:,outp.opf.tcounter] = get_hyperparams(prior)
+        outp.opf.hyper_skeleton[:,outp.opf.tcounter] = get_hyperparameters(prior)
         outp.opf.alpha_skeleton[:,outp.opf.tcounter] = compress_xi(outp.opf, state.α)
         
         outp.opf.theta = state.θ
@@ -151,12 +227,12 @@ mutable struct maxa_opt <:outputtimer
 end
 maxa_opt(max_attempts) = maxa_opt(true, max_attempts, 1)
 
-function eval_stopping(opf::maxa_opt, xi, time, bounce)
-    opf.acounter+=1
-    if opf.acounter >= opf.max_attempts
-        opf.running = false
+function eval_stopping(opt::maxa_opt, xi, time, bounce)
+    opt.acounter+=1
+    if opt.acounter >= opt.max_attempts
+        opt.running = false
     end
-    return opf
+    return opt
 end
 
 
@@ -250,6 +326,7 @@ end
 function partial_derivative_vec(ll::ll_logistic, ξ, k, mb)
     expX = exp.(ξ'll.X[:,mb]);
     return ll.X[k,mb].* ( vec(expX./(1+expX)) - ll.y[mb] )
+    expX = nothing 
     gc();
 end
 
@@ -449,7 +526,7 @@ function hyperparam_size(prior::gaussian_prior_nh)
     return 0 
 end
 
-function get_hyperparams(prior::gaussian_prior_nh) 
+function get_hyperparameters(prior::gaussian_prior_nh) 
     hyperparams = zeros(hyperparam_size(prior))
     return hyperparams
 end
@@ -490,13 +567,14 @@ function block_Gibbs_update_hyperparams(prior::HS_prior, ξ)
     prior.τ2 = rand(InverseGamma((prior.d)/2, 1/prior.γ + 0.5*sum(ξ[2:end].^2 ./ prior.λ2) ))
     prior.ν  = [rand(InverseGamma(1, 1+1/prior.λ2[i])) for i in 1:prior.d-1]
     prior.γ  = rand(InverseGamma(1, 1+1/prior.τ2))
+    return prior
 end
 
 function hyperparam_size(prior::HS_prior) 
     return 2*(prior.d-1) + 2 
 end
 
-function get_hyperparams(prior::HS_prior) 
+function get_hyperparameters(prior::HS_prior) 
     hyperparams = zeros(hyperparam_size(prior))
     hyperparams[1:prior.d-1] = prior.λ2
     hyperparams[(prior.d-1)+1] = prior.τ2
@@ -561,7 +639,7 @@ function hyperparam_size(prior::SS_prior)
     return 2*(prior.d-1) + 2 
 end
 
-function get_hyperparams(prior::SS_prior) 
+function get_hyperparameters(prior::SS_prior) 
     hyperparams = zeros(hyperparam_size(prior))
     hyperparams[1:prior.d-1] = prior.γ
     hyperparams[(prior.d-1)+1:2*(prior.d-1)] = prior.τ2
@@ -578,7 +656,6 @@ function set_hyperparams(prior::SS_prior, hyperparams::Array{Float64})
     prior.π = hyperparams[2*(prior.d-1)+1+1]
 end
 
-
 #--------------------------------------------------------------------------------------------------------
 # Structure implementing generalised double Pareto prior
 #--------------------------------------------------------------------------------------------------------
@@ -593,7 +670,7 @@ mutable struct GDP_prior <:gaussian_prior
     η::Float64
     σ2::Float64
     a::Float64
-    b2::Float64
+    b::Float64
 end
 
 GDP_prior(d, σ02) = GDP_prior(d, σ02, ones(d-1), ones(d-1), 1., 1., 1., 1., 1.)
@@ -606,79 +683,21 @@ function get_μ(prior::GDP_prior)
     return zeros(prior.d)
 end
 
-# HMC for lambda:
-
-function potential(prior::GDP_prior)
-    return 0.5*prior.τ.*prior.λ.^2 + prior.η*prior.λ - (prior.α+1)*log.(prior.λ)
-end
-
-function gradient(prior::GDP_prior)
-    prior.τ.*prior.λ + prior.η - (prior.α+1)./prior.λ
-end
-
-function HMC(prior::GDP_prior, stepsize::Float64, nsteps::Int64) 
-    
-    mom = rand(Normal(), prior.d-1)
-    current_U = potential(prior::GDP_prior)
-    current_K = mom.^2/2
-    current_pos = copy(prior.λ)
-    #reflections = 0
-    #hamiltonian = zeros(prior.d-1, nsteps)
-    
-    # Make a half step for momentum at the beginning
-    mom -= stepsize/2*gradient(prior::GDP_prior)    
-    
-    # Alternate full steps for position and momentum
-    for i in 1:nsteps 
-        # Make a full step for the position
-        delta_λ = stepsize*mom
-        to_reflect = (prior.λ+delta_λ) .< 0
-        prior.λ[to_reflect] = (abs.(delta_λ) - prior.λ)[to_reflect]
-        prior.λ[.!to_reflect] += delta_λ[.!to_reflect]
-        mom[to_reflect] *= -1
-#         prior.λ += stepsize*mom
-        #reflections += sum(to_reflect)
-        
-        # Make a full step for the momentum, except at end of trajectory
-        if i < nsteps
-            mom -= stepsize*gradient(prior::GDP_prior)    
-        end
-        
-        #hamiltonian[:,i] = potential(prior) + mom.^2/2  
-    end
-    # Make a half step for momentum at the end
-    mom -= stepsize/2*gradient(prior::GDP_prior)
-    
-    proposed_U = potential(prior::GDP_prior)
-    proposed_K = mom.^2/2 
-    
-    u = rand(prior.d-1)
-    α = exp.(current_U+current_K - (proposed_U+proposed_K))
-    
-    prior.λ = (u.<α).*prior.λ + (α.<=u).*current_pos
-    #return prior, reflections, hamiltonian
-end
-
 function block_Gibbs_update_hyperparams(prior::GDP_prior, ξ)
     σ = sqrt(prior.σ2)
     #gibbs steps here 
-    #HMC(prior, 1e-3, 10^3)
-    #prior.τ = [rand(InverseGaussian(abs(ξ[i+1])/prior.λ[i]*σ, ξ[i+1]^2/σ^2)) for i in 1:prior.d-1]
     prior.λ = [rand(Gamma(prior.α+1, abs(ξ[i+1])/σ + prior.η)) for i in 1:prior.d-1]
     τ_inv = [rand(InverseGaussian(prior.λ[i]*σ/abs(ξ[i+1]), prior.λ[i]^2)) for i in 1:prior.d-1]
-    #τ_inv = [rand(InverseGaussian(prior.λ[i]*σ/abs(ξ[i+1]), ξ[i+1]^2/σ^2)) for i in 1:prior.d-1]
     prior.τ = 1./τ_inv
-    a = prior.a + prior.d-1
-    b2 = (prior.a*prior.b2 + sum(ξ[2:end].^2./prior.τ))/(prior.a+prior.d-1)
-    prior.σ2 = rand(InverseGamma(a/2,a*b2/2))
-    #prior.σ2 = rand(InverseGamma((prior.d-1)/2, 0.5*sum(ξ[2:end].^2./prior.τ) ))
+    prior.σ2  = rand(InverseGamma(prior.a+prior.d/2, prior.b + 0.5*sum(ξ[2:end].^2 ./ prior.τ) ))
+    return prior
 end
 
 function hyperparam_size(prior::GDP_prior) 
     return 2*(prior.d-1) + 1
 end
 
-function get_hyperparams(prior::GDP_prior)
+function get_hyperparameters(prior::GDP_prior)
     hyperparams = zeros(hyperparam_size(prior::GDP_prior))
     hyperparams[1:prior.d-1] = prior.λ
     hyperparams[(prior.d-1) + (1:prior.d-1)] = prior.τ
@@ -737,13 +756,14 @@ function block_Gibbs_update_hyperparams(prior::NG_prior, ξ)
         end
     end
     prior.γ2  = 1/rand(Gamma(2+d*prior.λ, prior.M/(2*prior.λ)+sum(prior.Ψ)/2))
+    return prior
 end
 
 function hyperparam_size(prior::NG_prior) 
     return (prior.d-1) + 2
 end
 
-function get_hyperparams(prior::NG_prior)
+function get_hyperparameters(prior::NG_prior)
     hyperparams = zeros(hyperparam_size(prior))
     hyperparams[1:prior.d-1] = prior.Ψ
     hyperparams[(prior.d-1)+1] = prior.λ
@@ -757,6 +777,7 @@ function set_hyperparams(prior::NG_prior, hyperparams::Array{Float64})
     prior.λ = hyperparams[(prior.d-1)+1]
     prior.γ2 = hyperparams[(prior.d-1)+1+1]
 end
+
 
 
 #--------------------------------------------------------------------------------------------------------
@@ -775,7 +796,6 @@ function get_event_time(ai::Float64, bi::Float64)
         return rand(Exponential(1/ai))
     else 
         print("Error, slope is negative \n")
-        print("slope = ", bi, "\n")
     end
 end
 
@@ -824,8 +844,11 @@ end
 
 
 mutable struct block_gibbs_sampler <:msampler
-   λ::Float64
+    λ::Float64
+    nbounces::Int64
 end
+
+block_gibbs_sampler(λ) = block_gibbs_sampler(λ,0)
 
 ## --------------------------------------------------------------------------------------------------
 ## UPDATE STEPS FOR HYPER-PARAMETERS
@@ -837,10 +860,12 @@ end
 
 function evolve_path(mysampler::block_gibbs_sampler, mstate::zz_state, τ)
     mstate.ξ += τ*mstate.θ.*mstate.α
+    mstate.T += τ
 end
 
 function update_state(mysampler::block_gibbs_sampler, mstate::zz_state, model::model, τ)
     block_Gibbs_update_hyperparams(model.pr, mstate.ξ)
+    mysampler.nbounces += 1
     return true
 end
 
@@ -853,14 +878,16 @@ function get_event_time(mysampler::zz_sampler, mstate::zz_state, model::model)
     
     update_bound(mysampler.bb, model.ll, model.pr, mysampler.gs, mstate)
     a, b = mysampler.bb.a, mysampler.bb.b
-    event_times = [get_event_time(a[i], b[i]) for i in 1:length(a)]  
+    event_times = [get_event_time(a[i], b[i]) for i in 1:d]  
     τ, i0 = findmin(event_times) 
     mysampler.i0 = i0
     return τ
 end
 
 function evolve_path(mysampler::zz_sampler, mstate::zz_state, τ)
-    mstate.ξ += τ * mstate.θ .* mstate.α 
+    
+    mstate.ξ += τ*mstate.θ.*mstate.α
+    mstate.T += τ
 end
 
 function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
@@ -873,38 +900,52 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
     end
     bounce = false
     if rand() < alpha
+        vel = mstate.θ.*mstate.α
+        ΔT = mstate.T - mstate.T_lastbounce
+        
+        mstate.mu = (mstate.T_lastbounce*mstate.mu + mstate.ξ_lastbounce*ΔT + 1/2*vel*ΔT^2)/mstate.T
+        mstate.m2 = (mstate.T_lastbounce*mstate.m2 + mstate.ξ_lastbounce.^2*ΔT + vel.*mstate.ξ_lastbounce*ΔT^2 + 1/3*vel.^2*ΔT^2)/mstate.T
+        
+        mstate.T_lastbounce = copy(mstate.T)
+        mstate.ξ_lastbounce = copy(mstate.ξ)
+        
         mstate.θ[mysampler.i0] *= -1
         bounce = true
         mstate.n_bounces[mysampler.i0] += 1
         
-        L = 1
-        
-        #update speed: 
-        if mysampler.adapt_speed & (sum(mstate.n_bounces)%mysampler.L == 0)  & (sum(mstate.n_bounces) >= 1)
-            segment_idx = Int64(sum(mstate.n_bounces)/mysampler.L) 
-            est_segment = mstate.n_bounces ./ mstate.α
-            est_segment /= sum(est_segment)
-            mstate.est_rate = (segment_idx*mstate.est_rate + est_segment)/(segment_idx+1)
-            mstate.α = 1./mstate.est_rate
-            mstate.α /= mean(mstate.α)
-            
-            #if minimum(mstate.n_bounces) >= 5 
-            #   mstate.α ./=  (mstate.n_bounces).^0.35
-            #end
-            #mstate.α /= mean(mstate.α)
+        #adapt speed: 
+        if mysampler.adapt_speed == "by_bounce" 
+            if (sum(mstate.n_bounces)%mysampler.L == 0)  & (sum(mstate.n_bounces) >= 1)
+                segment_idx = Int64(sum(mstate.n_bounces)/mysampler.L) 
+                est_segment = mstate.n_bounces ./ mstate.α
+                est_segment /= sum(est_segment)
+                mstate.est_rate = (segment_idx*mstate.est_rate + est_segment)/(segment_idx+1)
+                mstate.α = 1./mstate.est_rate
+                mstate.α[1] = max(minimum(mstate.α[2:end])/10^2, mstate.α[1]) 
+
+                #if minimum(mstate.n_bounces) >= 5 
+                #   mstate.α ./=  (mstate.n_bounces).^0.35
+                #end
+                mstate.α /= mean(mstate.α)
+            end
+        elseif mysampler.adapt_speed == "by_var"  
+            if minimum(mstate.m2 - mstate.mu.^2) > 0 
+                mstate.α = sqrt.(mstate.m2 - mstate.mu.^2) 
+                mstate.α /= mean(mstate.α)
+            end
         end
     end 
     return bounce
 end
 
 
-function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Array{msampler})
+
+function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Array{msampler}, mstate::zz_state)
 
     K = length(blocksampler)
     counter = 1
 
     t = copy(outp.opf.bt_skeleton[outp.opf.tcounter])
-    mstate = zz_state(outp.opf)
     
 #-------------------------------------------------------------------------
     # run sampler:
@@ -936,11 +977,46 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
 end
 
 
+function ZZ_block_sample_discrete(model::model, opt::outputtimer, blocksampler::Array{msampler}, mstate::zz_state, xi_samples::zz_samples, pr_samples::hyp_samples)
+
+    K = length(blocksampler)
+    counter = 1
+    t = 0.
+    @assert xi_samples.h == pr_samples.h "Discretizations for samples and hypersamples do not match"
+    
+#-------------------------------------------------------------------------
+    # run sampler:
+    start = time()
+    bounce = false
+    while(is_running(opt))
+                
+        τ_list = [get_event_time(blocksampler[i], mstate, model) for i in 1:K]
+        τ, k0 = findmin(τ_list)
+        feed(xi_samples::zz_samples, mstate::zz_state, t, τ)
+        feed(pr_samples::hyp_samples, prior::gaussian_prior, t, τ)
+        
+        t += τ 
+        evolve_path(blocksampler[k0], mstate, τ)
+        bounce = update_state(blocksampler[k0], mstate, model, τ)
+        eval_stopping(opt::maxa_opt, mstate.ξ, t, bounce)
+        
+        counter += 1
+        if counter%10_000 == 0 
+            gc()
+        end
+        if counter % (opt.max_attempts/10) == 0 
+            print(Int64(100*counter/(opt.max_attempts)), "% attempts in ", round((time()-start)/60, 2), " mins \n")
+        end
+        finalize(xi_samples)
+        finalize(pr_samples)
+    end
+end
+
+
 function ZZ_sample(model::model, outp::outputscheduler, mysampler::zz_sampler, mstate::zz_state)
     
     d, Nobs = size(model.ll.X) 
     t = copy(outp.opf.bt_skeleton[outp.opf.tcounter])
-    
     counter = 1
     
 #-------------------------------------------------------------------------
@@ -1083,7 +1159,7 @@ end
 
 
 #--------------------------------------------------------------------------------------------
-# GIBBS ZIG-ZAG STUFF
+# GIBBS ZIG-ZAG STUFF [OLD]
 #--------------------------------------------------------------------------------------------
 
 mutable struct gzz_state
