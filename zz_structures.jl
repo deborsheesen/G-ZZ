@@ -904,7 +904,6 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
     counter = 1
 
     t = copy(outp.opf.bt_skeleton[outp.opf.tcounter])
-    mstate = zz_state(outp.opf)
     
 #-------------------------------------------------------------------------
     # run sampler:
@@ -928,7 +927,7 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
             gc()
         end
         if counter % (outp.opt.max_attempts/10) == 0 
-            print(Int64(100*counter/(outp.opt.max_attempts)), "% attempts in ", round((time()-start)/60, 2), " mins \n")
+            print(Int64(100*counter/(opt.max_attempts)), "% attempts in ", round((time()-start)/60, 2), " mins \n")
         end
     end
     finalize(outp.opf)
