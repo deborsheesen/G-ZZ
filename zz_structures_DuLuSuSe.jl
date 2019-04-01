@@ -130,6 +130,7 @@ function feed(outp::outputscheduler, mstate::zz_state, prior::prior_model, time:
     
     if add_output(outp.opf, mstate, time, bounce)
         outp.opf.tcounter +=1 
+        outp.opf.tot_bounces += 1
         if outp.opf.tcounter > size(outp.opf.bt_skeleton,2)
             outp.opf.xi_skeleton = extend_skeleton_points(outp.opf.xi_skeleton, outp.opf.size_increment)
             outp.opf.bt_skeleton = extend_skeleton_points(outp.opf.bt_skeleton, outp.opf.size_increment)
@@ -143,6 +144,8 @@ function feed(outp::outputscheduler, mstate::zz_state, prior::prior_model, time:
         
         outp.opf.theta = mstate.θ
         outp.opf.n_bounces = mstate.n_bounces
+        
+        update_summary(outp, mstate)
     end
     
     if to_trim(outp.opt) 
@@ -203,6 +206,7 @@ mutable struct projopf <:outputformater
     xi_m2::Array{Float64}
     xi_lastbounce::Array{Float64}
     T_lastbounce::Float64
+    tot_bounces::Int64
 end
 
 function trim(opf::projopf, mstate::zz_state)
@@ -261,7 +265,8 @@ function built_projopf(A_xi, A_hyp, size_increment)
     xi_m2 = zeros(d)
     xi_lastbounce = zeros(d)
     T_lastbounce = 0.
-    return d, xi_skeleton, bt_skeleton, theta, alpha_skeleton, n_bounces, hyper_skeleton, tcounter, size_increment, A_xi, d_out_xi, A_hyp, d_out_hyp, xi_mu, xi_m2, xi_lastbounce, T_lastbounce
+    tot_bounces = 1
+    return d, xi_skeleton, bt_skeleton, theta, alpha_skeleton, n_bounces, hyper_skeleton, tcounter, size_increment, A_xi, d_out_xi, A_hyp, d_out_hyp, xi_mu, xi_m2, xi_lastbounce, T_lastbounce, tot_bounces
 end
 
 function compress_xi(outp::projopf, xi)
@@ -980,7 +985,7 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
         bounce = true
         mstate.n_bounces[mysampler.i0] += 1
         
-        update_summary(outp, mstate)
+        
         
         #adapt speed: 
         if mysampler.adapt_speed == "by_bounce" 
@@ -1030,7 +1035,6 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
         evolve_path(blocksampler[k0], mstate, τ)
         bounce = update_state(blocksampler[k0], mstate, model, τ)
         
-        #outp = feed(outp, mstate, model.pr, bounce)
         outp, t = feed(outp, mstate, model.pr, t, bounce)
         
         counter += 1
