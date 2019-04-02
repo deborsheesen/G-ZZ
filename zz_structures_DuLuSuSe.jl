@@ -136,11 +136,13 @@ function feed(outp::outputscheduler, mstate::zz_state, prior::prior_model, time:
             outp.opf.bt_skeleton = extend_skeleton_points(outp.opf.bt_skeleton, outp.opf.size_increment)
             outp.opf.hyper_skeleton = extend_skeleton_points(outp.opf.hyper_skeleton, outp.opf.size_increment)
             outp.opf.alpha_skeleton = extend_skeleton_points(outp.opf.alpha_skeleton, outp.opf.size_increment)
+            outp.opf.vel_skeleton = extend_skeleton_points(outp.opf.vel_skeleton, outp.opf.size_increment)
         end
         outp.opf.xi_skeleton[:,outp.opf.tcounter] = compress_xi(outp.opf, mstate.ξ)
         outp.opf.bt_skeleton[:,outp.opf.tcounter] = time
         outp.opf.hyper_skeleton[:,outp.opf.tcounter] = compress_hyp(outp.opf, get_hyperparameters(prior))
         outp.opf.alpha_skeleton[:,outp.opf.tcounter] = compress_xi(outp.opf, mstate.α)
+        outp.opf.vel_skeleton[:,outp.opf.tcounter] = compress_xi(outp.opf, mstate.α.*mstate.θ)
         
         outp.opf.theta = mstate.θ
         outp.opf.n_bounces = mstate.n_bounces
@@ -186,6 +188,7 @@ function finalize(opf::outputformater)
     opf.bt_skeleton = opf.bt_skeleton[:,1:opf.tcounter]
     opf.hyper_skeleton = opf.hyper_skeleton[:,1:opf.tcounter]
     opf.alpha_skeleton = opf.alpha_skeleton[:,1:opf.tcounter]
+    opf.vel_skeleton = opf.vel_skeleton[:,1:opf.tcounter]
 end
 
 mutable struct projopf <:outputformater
@@ -194,6 +197,7 @@ mutable struct projopf <:outputformater
     bt_skeleton::Array{Float64}
     theta::Array{Float64} 
     alpha_skeleton::Array{Float64}
+    vel_skeleton::Array{Float64}
     n_bounces::Array{Int64}
     hyper_skeleton::Array{Float64}
     tcounter::Int64
@@ -215,15 +219,18 @@ function trim(opf::projopf, mstate::zz_state)
     bt_skeleton = zeros(size(opf.bt_skeleton,1), 1000)
     alpha_skeleton = zeros(size(opf.alpha_skeleton,1), 1000)
     hyper_skeleton = zeros(size(opf.hyper_skeleton,1), 1000)
+    vel_skeleton = zeros(size(opf.vel_skeleton,1), 1000)
 
     xi_skeleton[:,1] = copy(opf.xi_skeleton[:,opf.tcounter])
     alpha_skeleton[:,1] = copy(opf.alpha_skeleton[:,opf.tcounter])
     hyper_skeleton[:,1] = copy(opf.hyper_skeleton[:,opf.tcounter])
+    vel_skeleton[:,1] = copy(opf.vel_skeleton[:,opf.tcounter])
     
     opf.xi_skeleton = copy(xi_skeleton)
     opf.bt_skeleton = copy(bt_skeleton)
     opf.alpha_skeleton = copy(alpha_skeleton)
     opf.hyper_skeleton = copy(hyper_skeleton)
+    opf.vel_skeleton = copy(vel_skeleton)
     
     opf.xi_lastbounce = copy(mstate.ξ)
     
@@ -260,13 +267,14 @@ function built_projopf(A_xi, A_hyp, size_increment)
     theta = ones(d)
     hyper_skeleton = ones(d_out_hyp, 10*size_increment)
     alpha_skeleton = ones(d_out_xi, 10*size_increment)
+    vel_skeleton = ones(d_out_xi, 10*size_increment)
     n_bounces = zeros(d)
     xi_mu = zeros(d)
     xi_m2 = zeros(d)
     xi_lastbounce = zeros(d)
     T_lastbounce = 0.
     tot_bounces = 1
-    return d, xi_skeleton, bt_skeleton, theta, alpha_skeleton, n_bounces, hyper_skeleton, tcounter, size_increment, A_xi, d_out_xi, A_hyp, d_out_hyp, xi_mu, xi_m2, xi_lastbounce, T_lastbounce, tot_bounces
+    return d, xi_skeleton, bt_skeleton, theta, alpha_skeleton, vel_skeleton, n_bounces, hyper_skeleton, tcounter, size_increment, A_xi, d_out_xi, A_hyp, d_out_hyp, xi_mu, xi_m2, xi_lastbounce, T_lastbounce, tot_bounces
 end
 
 function compress_xi(outp::projopf, xi)
@@ -1300,7 +1308,41 @@ function compute_configT(m::model, xi_samples::Array{Float64}, hyper_samples::Ar
     return configT/n_samples
 end
 
-
+function compute_ESS(opf::outputformater, B::Int64) 
+    dim = size(opf.xi_skeleton,1)
+    T = opf.bt_skeleton[1,opf.tcounter]
+    
+    batch_length = T/B
+    Y = zeros(B, dim)
+    t = opf.bt_skeleton[1,1]
+    xi = opf.xi_skeleton[:,1]
+    vel = opf.vel_skeleton[:,1]
+    
+    k = 1 #counter for skeleton point
+    
+    @showprogress for i in 1:B
+        while t < i*T/B 
+            next_bounce_time = min(opf.bt_skeleton[1,k+1], i*T/B)
+            Δt = next_bounce_time - t
+            Y[i,:] += xi*Δt + vel.*Δt.^2/2
+            t += Δt 
+            if next_bounce_time == opf.bt_skeleton[1,k+1] 
+                xi = opf.xi_skeleton[1,k+1] 
+                vel = opf.vel_skeleton[1,k+1]
+                k += 1
+            else 
+                xi += vel.*Δt
+            end
+        end
+    end
+    
+    var1 = opf.xi_m2 - opf.xi_mu
+    var2 = zeros(dim)
+    for i in 1:dim 
+        var2[i] = var(Y[:,dim])
+    end
+    ESS = T*var1./var2
+end
 
 
 
