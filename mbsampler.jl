@@ -165,7 +165,7 @@ function get_weights(gw::spwumbsampler, mb)
         if mb[i] in gw.weights_het.nzind
             mb_weights[i] =  gw.weights_het[mb[i]]
         else
-            mb_weights[i] = gw.weights_hom
+            mb_weights[i] = gw.weight_hom
         end
     end
     return mb_weights

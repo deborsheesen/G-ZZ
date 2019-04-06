@@ -239,7 +239,7 @@ end
 
 function update_summary(outp::outputscheduler, mstate::zz_state)
     
-    if outp.opt.acounter >= outp.opt.discard
+    if outp.opt.acounter > outp.opt.discard
         vel = mstate.θ.*mstate.α
         current_t = outp.opf.bt_skeleton[1,outp.opf.tcounter]
         ΔT = current_t - outp.opf.T_lastbounce
@@ -486,7 +486,7 @@ function build_linear_bound(ll::ll_logistic_sp, pr::gaussian_prior, gs::mbsample
     d, Nobs = size(ll.X)
     
     const_ = zeros(d)
-    for i in 1:d
+    @showprogress for i in 1:d
         nz_ind = ll.X[i,:].nzind
         const_[i] = maximum(abs.(ll.X[i,nz_ind]./get_weights(gs.mbs[i],nz_ind)))
     end
@@ -507,7 +507,7 @@ function build_linear_bound(ll::ll_logistic_sp, pr::gaussian_prior, gs::cvmbsamp
     C_lipschitz = spzeros(d, Nobs)
     const_ = zeros(d)
     normXj = [norm(ll.X[:,j]) for j in 1:Nobs]
-    for i in 1:d 
+    @showprogress for i in 1:d 
         nz_ind = ll.X[i,:].nzind
         C_lipschitz[i,nz_ind] = 1/4*abs.(ll.X[i,nz_ind ]).*normXj[nz_ind]
         const_[i] = maximum( C_lipschitz[i,nz_ind]./get_weights(gs.mbs[i], nz_ind) )
@@ -1335,8 +1335,9 @@ function compute_ESS(opf::outputformater, B::Int64)
             end
         end
     end
+    Y *= sqrt(B/T)
     
-    var1 = opf.xi_m2 - opf.xi_mu
+    var1 = opf.xi_m2 - opf.xi_mu.^2
     var2 = zeros(dim)
     for i in 1:dim 
         var2[i] = var(Y[:,dim])
