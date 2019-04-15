@@ -368,8 +368,8 @@ function estimate_ll_partial(ll::ll_model, ξ, k, mb, gs::mbsampler)
     return ll.Nobs*sum(partial_derivative_vec(ll, ξ, k, mb).*get_ubf(gs,mb))
 end
 
-function estimate_ll_partial(ll::ll_model, ξ, k, mb, gs::sampler_list)
-    return estimate_ll_partial(ll, ξ, k, mb, gs.mbs[k])
+function estimate_ll_partial(ll::ll_model, ξ, k, mb, gs_list::mbsampler_list)
+    return estimate_ll_partial(ll, ξ, k, mb, gs_list.mbs[k])
 end
 
 function estimate_ll_partial(ll::ll_model, ξ, k, mb, gs::cvmbsampler_list)
@@ -377,7 +377,7 @@ function estimate_ll_partial(ll::ll_model, ξ, k, mb, gs::cvmbsampler_list)
                                              - gs.gradient_root_vec[k,mb]).*get_ubf(gs.mbs[k],mb))
 end
 
-function estimate_rate(m::model, mstate::zz_state, i0, mb, gs::sampler_list)
+function estimate_rate(m::model, mstate::zz_state, i0, mb, gs::mbsampler_list)
     rate_prior = pos(mstate.θ[i0]*mstate.α[i0]*partial_derivative(m.pr, mstate.ξ, i0))
     rate_likelihood = pos(mstate.θ[i0]*mstate.α[i0]*estimate_ll_partial(m.ll, mstate.ξ, i0, mb, gs.mbs[i0]))
     return rate_prior + rate_likelihood
@@ -421,7 +421,7 @@ end
 
 function update_bound(bb::linear_bound, ll::ll_logistic, pr::gaussian_prior, gs::mbsampler_list, mstate::zz_state)
     bb.a = mstate.α .* (bb.const_ + abs.(mstate.ξ-get_μ(pr))./ get_σ2(pr))
-    bb.b = mstate.α ./ get_σ2(pr)
+    bb.b = mstate.α.^2 ./ get_σ2(pr)
 end
 
 #------------------------- Bounds, with control variates -----------------------------# 
@@ -441,8 +441,8 @@ end
 function update_bound(bb::linear_bound, ll::ll_logistic, pr::gaussian_prior, gs::cvmbsampler_list, mstate::zz_state)
     d = length(mstate.ξ)
     norm_ = norm(gs.root-mstate.ξ)
-    bb.a = pos(mstate.θ.*mstate.α.*gs.gradient_log_posterior_root_sum) + mstate.α*norm_ .* (bb.const_ + 1.0 ./get_σ2(pr))
-    bb.b = mstate.α*norm(mstate.α) .* (bb.const_ + 1.0 ./get_σ2(pr))
+    bb.a = pos(mstate.θ.*mstate.α.*gs.gradient_log_posterior_root_sum) + mstate.α*norm_ .* (bb.const_ + 1./get_σ2(pr))
+    bb.b = mstate.α*norm(mstate.α) .* (bb.const_ + 1./get_σ2(pr))
 end
 
 #--------------------------------------------------------------------------------------------------------
@@ -496,7 +496,8 @@ end
 function update_bound(bb::linear_bound, ll::ll_logistic_sp, pr::gaussian_prior, gs::mbsampler_list, mstate::zz_state)
     d, Nobs = size(ll.X)
     bb.a = mstate.α .* (bb.const_ + abs.(mstate.ξ-get_μ(pr))./get_σ2(pr))
-    bb.b = mstate.α ./ get_σ2(pr)
+    bb.b = mstate.α.^2 ./ get_σ2(pr)
+    #print("bu ")
 end
 
 #-------------------- Bounds, with control variates + SPARSE -----------------------------# 
@@ -517,11 +518,10 @@ function build_linear_bound(ll::ll_logistic_sp, pr::gaussian_prior, gs::cvmbsamp
 end
 
 function update_bound(bb::linear_bound, ll::ll_logistic_sp, pr::gaussian_prior, gs::cvmbsampler_list, mstate::zz_state)
-    
     d = length(mstate.ξ)
     norm_ = norm(gs.root-mstate.ξ)
-    bb.a = pos(mstate.θ.*mstate.α.*gs.gradient_log_posterior_root_sum) + mstate.α*norm_ .* (bb.const_ + 1.0 ./get_σ2(pr))
-    bb.b = mstate.α*norm(mstate.α) .* (bb.const_ + 1.0 ./get_σ2(pr))
+    bb.a = pos(mstate.θ.*mstate.α.*gs.gradient_log_posterior_root_sum) + mstate.α*norm_ .* (bb.const_ + 1./get_σ2(pr))
+    bb.b = mstate.α*norm(mstate.α) .* (bb.const_ + 1./get_σ2(pr))
     
 end
 
@@ -566,25 +566,25 @@ end
 # Derivative for prior 
 #--------------------------------------------------------------------------------------------------------
         
-function gradient(pp::prior_model, ξ) 
-    d, = length(ξ)
-    return [partial_derivative(pp, ξ, k) for k in 1:d]
+function gradient(pr::prior_model, ξ) 
+    d = length(ξ)
+    return [partial_derivative(pr, ξ, k) for k in 1:d]
 end
 
-function log_prior(pp::gaussian_prior, ξ) 
-    return -0.5*sum( (ξ - get_μ(pp)).^2 ./ get_σ2(pp) )
+function log_prior(pr::gaussian_prior, ξ) 
+    return -0.5*sum( (ξ - get_μ(pr)).^2 ./ get_σ2(pr) )
 end
 
 
-function partial_derivative(pp::gaussian_prior, ξ, k) 
-    return (ξ[k] - get_μ(pp)[k]) ./ (get_σ2(pp)[k])
+function partial_derivative(pr::gaussian_prior, ξ, k) 
+    return (ξ[k] - get_μ(pr)[k]) / (get_σ2(pr)[k])
 end
 
 #--------------------------------------------------------------------------------------------------------
 # Structure implementing Gaussian non-hierarchical prior
 #--------------------------------------------------------------------------------------------------------
 
-struct gaussian_prior_nh <:gaussian_prior
+mutable struct gaussian_prior_nh <:gaussian_prior
     μ::Array{Float64}
     σ2::Array{Float64}
 end
@@ -648,7 +648,6 @@ function block_Gibbs_update_hyperparams(prior::HS_prior, ξ)
     prior.τ2 = rand(InverseGamma((prior.d)/2, 1/prior.γ + 0.5*sum(ξ[2:end].^2 ./ prior.λ2) ))
     prior.ν  = [rand(InverseGamma(1, 1+1/prior.λ2[i])) for i in 1:prior.d-1]
     prior.γ  = rand(InverseGamma(1, 1+1/prior.τ2))
-    return prior
 end
 
 function hyperparam_size(prior::HS_prior) 
@@ -771,7 +770,6 @@ function block_Gibbs_update_hyperparams(prior::GDP_prior, ξ)
     τ_inv = [rand(InverseGaussian(prior.λ[i]*σ/abs(ξ[i+1]), prior.λ[i]^2)) for i in 1:prior.d-1]
     prior.τ = 1./τ_inv
     prior.σ2  = rand(InverseGamma(prior.a+prior.d/2, prior.b + 0.5*sum(ξ[2:end].^2 ./ prior.τ) ))
-    return prior
 end
 
 function hyperparam_size(prior::GDP_prior) 
@@ -837,7 +835,6 @@ function block_Gibbs_update_hyperparams(prior::NG_prior, ξ)
         end
     end
     prior.γ2  = 1/rand(Gamma(2+d*prior.λ, prior.M/(2*prior.λ)+sum(prior.Ψ)/2))
-    return prior
 end
 
 function hyperparam_size(prior::NG_prior) 
@@ -947,6 +944,7 @@ end
 function update_state(mysampler::block_gibbs_sampler, mstate::zz_state, model::model, τ)
     block_Gibbs_update_hyperparams(model.pr, mstate.ξ)
     mysampler.nbounces += 1
+    #print(" hu ")
     return true
 end
 
@@ -958,8 +956,7 @@ end
 function get_event_time(mysampler::zz_sampler, mstate::zz_state, model::model)
     
     update_bound(mysampler.bb, model.ll, model.pr, mysampler.gs, mstate)
-    a, b = mysampler.bb.a, mysampler.bb.b
-    event_times = [get_event_time(a[i], b[i]) for i in 1:d]  
+    event_times = [get_event_time(mysampler.bb.a[i], mysampler.bb.b[i]) for i in 1:d]  
     τ, i0 = findmin(event_times) 
     mysampler.i0 = i0
     return τ
@@ -973,10 +970,16 @@ end
 function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
     mb = gsample(mysampler.gs.mbs[mysampler.i0])
     rate_estimated = estimate_rate(model, mstate, mysampler.i0, mb, mysampler.gs)
+    bound = evaluate_bound(mysampler.bb, τ, mysampler.i0)
     
-    alpha = rate_estimated/evaluate_bound(mysampler.bb, τ, mysampler.i0)
+    alpha = rate_estimated/bound
+    #print(alpha, "\n")
     if alpha > 1
         print("alpha: ", alpha, "\n")
+        error(rate_estimated, " | ", 
+              bound, " | ", 
+              τ, " | ", mstate.α[mysampler.i0], " | ", mysampler.i0, " | ",
+              bb.a[mysampler.i0], ", ", bb.b[mysampler.i0])
     end
     bounce = false
     if rand() < alpha
@@ -994,7 +997,6 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
         mstate.n_bounces[mysampler.i0] += 1
         
         
-        
         #adapt speed: 
         if mysampler.adapt_speed == "by_bounce" 
             if (sum(mstate.n_bounces)%mysampler.L == 0)  & (sum(mstate.n_bounces) >= 1)
@@ -1008,18 +1010,18 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
                 #if minimum(mstate.n_bounces) >= 5 
                 #   mstate.α ./=  (mstate.n_bounces).^0.35
                 #end
-                mstate.α /= mean(mstate.α)
             end
         elseif mysampler.adapt_speed == "by_var"  
             if minimum(mstate.m2 - mstate.mu.^2) > 0 
                 mstate.α = sqrt.(mstate.m2 - mstate.mu.^2) 
-                mstate.α /= mean(mstate.α)
             end
         end
+        #mstate.α = rand(length(mstate.α))
+        mstate.α /= mean(mstate.α)
+        
     end 
     return bounce
 end
-
 
 
 function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Array{msampler}, mstate::zz_state)
@@ -1042,20 +1044,25 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
         
         evolve_path(blocksampler[k0], mstate, τ)
         bounce = update_state(blocksampler[k0], mstate, model, τ)
-        
         outp, t = feed(outp, mstate, model.pr, t, bounce)
+        update_bound(blocksampler[1].bb, model.ll, model.pr, blocksampler[1].gs, mstate)
         
         counter += 1
         if counter%10_000 == 0 
             gc()
         end
         if counter % (outp.opt.max_attempts/10) == 0 
-            print(Int64(100*counter/(outp.opt.max_attempts)), "% attempts in ", round((time()-start)/60, 2), " mins \n")
+            @printf("%i percent attempts in %.2f min; zz bounces = %i, hyp bounces = %i \n", Int64(100*counter/(outp.opt.max_attempts)), round((time()-start)/60, 2), sum(mstate.n_bounces), outp.opf.tot_bounces-sum(mstate.n_bounces))
         end
     end
     finalize(outp.opf)
     return outp
 end
+
+#######################################################################################
+########## DISCRETE VERSION -----------------------------------------------------::::::
+#######################################################################################
+
 
 
 function ZZ_block_sample_discrete(model::model, opt::outputtimer, blocksampler::Array{msampler}, mstate::zz_state, xi_samples::zz_samples, pr_samples::hyp_samples)
@@ -1086,7 +1093,7 @@ function ZZ_block_sample_discrete(model::model, opt::outputtimer, blocksampler::
             gc()
         end
         if counter % (opt.max_attempts/10) == 0 
-            print(Int64(100*counter/(opt.max_attempts)), "% attempts in ", round((time()-start)/60, 2), " mins, zz bounces = ", sum(mstate.n_bounces), ", hyp bounces = ", blocksampler[2].nbounces, ", samples extracted = ", size(xi_samples.samples,2), "\n")
+            print(Int64(100*counter/(opt.max_attempts)), "% attempts in ", round((time()-start)/60, 2), " min, zz bounces = ", sum(mstate.n_bounces), ", hyp bounces = ", blocksampler[2].nbounces, ", samples extracted = ", size(xi_samples.samples,2), "\n")
             
         end
         finalize(xi_samples)
@@ -1120,7 +1127,7 @@ function ZZ_sample(model::model, outp::outputscheduler, mysampler::zz_sampler, m
             gc()
         end
         if counter % (outp.opt.max_attempts/10) == 0 
-            print(Int64(100*counter/(outp.opt.max_attempts)), "% attempts in ", round((time()-start)/60, 2), " mins \n")
+            print(Int64(100*counter/(outp.opt.max_attempts)), "% attempts in ", round((time()-start)/60, 2), " min \n")
         end
     end
     finalize(outp.opf)
