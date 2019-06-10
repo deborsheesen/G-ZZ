@@ -856,6 +856,60 @@ function set_hyperparams(prior::NG_prior, hyperparams::Array{Float64})
     prior.γ2 = hyperparams[(prior.d-1)+1+1]
 end
 
+#--------------------------------------------------------------------------------------------------------
+# Structure implementing mixed effects prior 
+#--------------------------------------------------------------------------------------------------------
+
+mutable struct MM_prior <:gaussian_prior
+    d_cov::Int64
+    K::Int64
+    σ2::Float64
+    ϕ::Float64
+    κ2::Float64
+    
+    a_ϕ::Float64
+    b_ϕ::Float64
+    a_σ::Float64
+    b_σ::Float64
+
+end
+
+MM_prior(d_cov, K, σ2) = MM_prior(d_cov, K, σ2, 1., 1., 1., 1., 1., 1.)
+
+function get_σ2(prior::MM_prior)
+    return vcat(prior.κ2/prior.ϕ, [1/prior.ϕ for i in 1:K], [prior.σ2 for i in 1:d_cov])
+end
+
+function get_μ(prior::MM_prior)
+    d = 1+prior.K+prior.d_cov
+    return zeros(d)
+end
+
+function block_Gibbs_update_hyperparams(prior::MM_prior, ξ)
+   
+    #gibbs steps here 
+    prior.ϕ = rand(Gamma(prior.a_ϕ+(prior.K+1)/2, prior.b_ϕ+ξ[1]^2/(2*prior.κ2)+0.5*sum(ξ[2:prior.K+1].^2)))
+    prior.σ2 = rand(InverseGamma(prior.a_σ+3/2, prior.b_σ+0.5*sum(ξ[1+K+1:end].^2)))
+    
+end
+
+function hyperparam_size(prior::MM_prior) 
+    return 2 
+end
+
+function get_hyperparameters(prior::MM_prior) 
+    hyperparams = zeros(hyperparam_size(prior))
+    hyperparams[1] = prior.ϕ
+    hyperparams[2] = prior.σ2
+    return hyperparams
+end
+
+function set_hyperparams(prior::MM_prior, hyperparams::Array{Float64}) 
+    @assert hyperparam_size(prior) == length(hyperparams)
+    prior.ϕ = hyperparams[1]
+    prior.σ2 = hyperparams[2]
+end
+
 
 
 #--------------------------------------------------------------------------------------------------------
@@ -1045,14 +1099,18 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
         evolve_path(blocksampler[k0], mstate, τ)
         bounce = update_state(blocksampler[k0], mstate, model, τ)
         outp, t = feed(outp, mstate, model.pr, t, bounce)
-        update_bound(blocksampler[1].bb, model.ll, model.pr, blocksampler[1].gs, mstate)
+
+        #if rand() < 1e-2 
+        #    block_Gibbs_update_hyperparams(model.pr, mstate.ξ)
+        #    blocksampler[2].nbounces += 1
+        #end
         
         counter += 1
         if counter%10_000 == 0 
             gc()
         end
         if counter % (outp.opt.max_attempts/10) == 0 
-            @printf("%i percent attempts in %.2f min; zz bounces = %i, hyp bounces = %i \n", Int64(100*counter/(outp.opt.max_attempts)), round((time()-start)/60, 2), sum(mstate.n_bounces), outp.opf.tot_bounces-sum(mstate.n_bounces))
+            @printf("%i percent attempts in %.2f min; zz bounces = %i, hyp bounces = %i, total time of process = %.3f \n", Int64(100*counter/(outp.opt.max_attempts)), round((time()-start)/60, 2), sum(mstate.n_bounces), blocksampler[2].nbounces, mstate.T)
         end
     end
     finalize(outp.opf)

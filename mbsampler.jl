@@ -68,16 +68,17 @@ end
 # Minibatch sampler for uniform subsampling
 #-------------------------------------------------
 struct umbsampler <: mbsampler
+    start::Int64
     N::Int64
     mb_size::Int64
     ubf_scalar::Float64
     weights_scalar::Float64
 end
 
-umbsampler(N,mb_size) = umbsampler(N, mb_size, 1/mb_size, 1/N)
+umbsampler(start,N,mb_size) = umbsampler(start, N, mb_size, 1/mb_size, 1/N)
 
 function gsample(gw::umbsampler)
-    return sample(1:gw.N,gw.mb_size)
+    return gw.start + sample(1:gw.N,gw.mb_size)
 end
 
 # returns the importance weights for the sampler
