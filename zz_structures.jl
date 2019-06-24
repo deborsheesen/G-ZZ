@@ -868,7 +868,7 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
     rate_estimated = estimate_rate(model, mstate, mysampler.i0, mb, mysampler.gs)
     
     alpha = (rate_estimated)/evaluate_bound(mysampler.bb, τ, mysampler.i0)
-    if alpha > 1
+    if alpha > 1+1e-5
         print("alpha: ", alpha, "\n")
     end
     bounce = false

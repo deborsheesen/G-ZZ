@@ -75,7 +75,7 @@ struct umbsampler <: mbsampler
     weights_scalar::Float64
 end
 
-umbsampler(start,N,mb_size) = umbsampler(start, N, mb_size, 1/mb_size, 1/N)
+umbsampler(start, N, mb_size) = umbsampler(start, N, mb_size, 1/mb_size, 1/N)
 
 function gsample(gw::umbsampler)
     return gw.start + sample(1:gw.N,gw.mb_size)
@@ -83,8 +83,13 @@ end
 
 # returns the importance weights for the sampler
 function get_ubf(gw::umbsampler, mb)
-    return gw.ubf_scalar*ones(length(mb))
+    if length(mb) > 1
+        return gw.ubf_scalar*ones(length(mb))
+    else
+        return gw.ubf_scalar
+    end
 end
+
 
 # returns weights for the sampler
 function get_weights(gw::umbsampler, mb)
@@ -104,7 +109,7 @@ end
 wumbsampler(N, mb_size, weights) = wumbsampler(built_wumbsampler(N, mb_size, weights)...)
 
 function built_wumbsampler(N, mb_size, weights)
-    weights/=sum(weights)
+    weights /= sum(weights)
     ubf =  1.0./(mb_size*N*weights)
     return N, mb_size, ubf, weights
 end
@@ -174,7 +179,7 @@ end
 
 function gsample(gw::spwumbsampler)
     mb = Array{Int64}(gw.mb_size)
-    n_het = rand(Binomial(mb_size,prob_het))
+    n_het = rand(Binomial(gw.mb_size, gw.prob_het))
     mb[1:n_het] = gw.weights_het.nzind[sample(1:gw.N_het, Weights(gw.weights_het.nzval), n_het)]   
     for i in (n_het+1):mb_size
         i_proposal = sample(1:gw.N,1)[1]
@@ -289,7 +294,6 @@ struct cvmbsampler_list <: sampler_list
     gradient_log_prior_root::Array{Float64}
     gradient_log_ll_root_vec
     root::Array{Float64}
-    #C::Array{Float64}
 end
 cvmbsampler_list(m, mbs, root) = cvmbsampler_list(build_cvmbsampler_list(m, mbs, root)...)
 cvmbsampler_list(m, mbs, root, is_sparse) = cvmbsampler_list(build_cvmbsampler_list(m, mbs, root, is_sparse)...)
@@ -448,7 +452,8 @@ function built_spcmbsampler(csamplers, clusters, weights)
     for (ci, c) in  enumerate(clusters)
         #weights_sum = sum(csamplers[ci].weights)
         for (vi, v) in enumerate(c)
-            ubf[v] = (cluster_size[ci]/N) * csamplers[ci].ubf[vi] 
+            #ubf[v] = (cluster_size[ci]/N) * csamplers[ci].ubf[vi] 
+            ubf[v] = (cluster_size[ci]/N) * get_ubf(csamplers[ci], vi) 
             #weights[v] = (csamplers[ci].weights[vi]/weights_sum)*(cluster_size[ci]/N)
         end
     end    

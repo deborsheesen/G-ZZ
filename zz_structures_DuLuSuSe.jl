@@ -1028,7 +1028,7 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
     
     alpha = rate_estimated/bound
     #print(alpha, "\n")
-    if alpha > 1
+    if alpha > 1 + 1e-5
         print("alpha: ", alpha, "\n")
         error(rate_estimated, " | ", 
               bound, " | ", 
@@ -1176,7 +1176,8 @@ function ZZ_sample(model::model, outp::outputscheduler, mysampler::zz_sampler, m
         #-------------------------------------
         t += τ 
         evolve_path(mysampler, mstate, τ)
-        bounce = update_state(mysampler, mstate, model, τ)
+        bounce = update_state
+        update_state(mysampler, mstate, model, τ)
         
         outp = feed(outp, mstate, model.pr, t, bounce)
         
