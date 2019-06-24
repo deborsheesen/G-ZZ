@@ -572,7 +572,7 @@ function gradient(pr::prior_model, ξ)
 end
 
 function log_prior(pr::gaussian_prior, ξ) 
-    return -0.5*sum( (ξ - get_μ(pr)).^2 ./ get_σ2(pr) )
+    return -0.5*sum((ξ - get_μ(pr)).^2 ./ get_σ2(pr))
 end
 
 
@@ -589,7 +589,7 @@ mutable struct gaussian_prior_nh <:gaussian_prior
     σ2::Array{Float64}
 end
 
-gaussian_prior_nh(d, σ2) = gaussian_prior_nh(ones(d), σ2*ones(d))
+gaussian_prior_nh(d, σ2) = gaussian_prior_nh(zeros(d), σ2*ones(d))
 
 function get_σ2(prior::gaussian_prior)
     return prior.σ2
@@ -1110,7 +1110,7 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
             gc()
         end
         if counter % (outp.opt.max_attempts/10) == 0 
-            @printf("%i percent attempts in %.2f min; zz bounces = %i, hyp bounces = %i, total time of process = %.3f \n", Int64(100*counter/(outp.opt.max_attempts)), round((time()-start)/60, 2), sum(mstate.n_bounces), blocksampler[2].nbounces, mstate.T)
+            @printf("%i percent attempts in %.2f min; zz bounces = %i, hyp bounces = %i, total time of process = %.3f \n", Int64(100*counter/(outp.opt.max_attempts)), (time()-start)/60, sum(mstate.n_bounces), blocksampler[2].nbounces, mstate.T)
         end
     end
     finalize(outp.opf)
@@ -1251,7 +1251,7 @@ end
 
 """ 
 Stochastic gradient descent for finding root.
-Does not work vert well 
+Does not work very well 
 """
 function stochastic_gradient(m::model, ξ, batch_size) 
     d = length(ξ)
@@ -1410,6 +1410,63 @@ function compute_ESS(opf::outputformater, B::Int64)
     end
     ESS = T*var1./var2
 end
+
+
+##----------------------- HMC within Gibbs -----------------------------##
+function HMC(model::model, current_q, epsilon, L) 
+    
+    q = copy(current_q)
+    p = randn(length(current_q))
+    current_p = copy(p)
+    
+    p -= epsilon*gradient(model,q)/2
+    for i in 1:L 
+        q += epsilon*p 
+        if i!=L 
+            p -= epsilon*gradient(model,q)
+        end
+    end 
+    p -= epsilon*gradient(model,q)/2
+    
+    p = -p 
+    
+    current_U = -log_posterior(model, current_q) 
+    current_K = sum(current_p.^2)/2
+    proposed_U = -log_posterior(model, q) 
+    proposed_K = sum(p.^2)/2
+    
+    if rand() < exp(current_U-proposed_U+current_K-proposed_K) 
+        return q, 1
+    else 
+        return current_q, 0 
+    end
+end
+
+function GibbsHMC(model::model, ξ0, epsilon, L, T) 
+    d = size(model.ll.X,1)
+    d_hyp = hyperparam_size(model.pr)
+    xi_samples = zeros(d,T+1)
+    xi_samples[:,1] = ξ0
+    hyper_samples = zeros(d_hyp,T+1)
+    hyper_samples[:,1] = get_hyperparameters(model.pr)
+    
+    HMC_accept = 0
+    
+    start = time()
+    for t in 1:T 
+        hmc = HMC(model, xi_samples[:,t], epsilon, L)
+        xi_samples[:,t+1] = hmc[1]
+        HMC_accept += hmc[2]
+        block_Gibbs_update_hyperparams(model.pr, xi_samples[:,t+1])
+        hyper_samples[:,t+1] = get_hyperparameters(model.pr)
+        
+        if t % (T/10) == 0 
+            @printf("%i percent steps in %.1f min; HMC acceptance = %i percent \n", Int64(100*t/T), (time()-start)/60, 100*HMC_accept/t)
+        end
+    end
+    return xi_samples, hyper_samples, HMC_accept/T
+end 
+
 
 
 
