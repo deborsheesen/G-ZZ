@@ -181,7 +181,7 @@ function gsample(gw::spwumbsampler)
     mb = Array{Int64}(gw.mb_size)
     n_het = rand(Binomial(gw.mb_size, gw.prob_het))
     mb[1:n_het] = gw.weights_het.nzind[sample(1:gw.N_het, Weights(gw.weights_het.nzval), n_het)]   
-    for i in (n_het+1):mb_size
+    for i in (n_het+1):gw.mb_size
         i_proposal = sample(1:gw.N,1)[1]
         while (i_proposal in gw.weights_het.nzind)
             i_proposal = sample(1:gw.N,1)[1]
@@ -306,7 +306,7 @@ function build_cvmbsampler_list(m, mbs, root, is_sparse=false)
     
     if is_sparse
         gradient_log_ll_root_vec = spzeros(d, Nobs)
-        @showprogress for i in 1:d
+        for i in 1:d
             #Compute gradient only for datapoints with non-zeros entry in the i-th dimension (this is fine because partial derivative is zero otherwise for logistic regression) 
             nz_ind = m.ll.X[i,:].nzind 
             gradient_log_ll_root_vec[i,nz_ind] = partial_derivative_vec(m.ll, root, i, nz_ind)

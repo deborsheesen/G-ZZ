@@ -149,8 +149,8 @@ function update_summary(outp::outputscheduler, mstate::zz_state)
         vel = mstate.θ.*mstate.α
         current_t = outp.opf.bt_skeleton[1,outp.opf.tcounter]
         ΔT = current_t - outp.opf.T_lastbounce
-        opf.xi_mu = (outp.opf.T_lastbounce*opf.xi_mu + outp.opf.xi_lastbounce*ΔT + 1/2*vel*ΔT^2)/current_t
-        opf.xi_m2 = (outp.opf.T_lastbounce*opf.xi_m2 + outp.opf.xi_lastbounce.^2*ΔT + vel.*outp.opf.xi_lastbounce*ΔT^2 + 1/3*vel.^2*ΔT^2)/current_t
+        outp.opf.xi_mu = (outp.opf.T_lastbounce*outp.opf.xi_mu + outp.opf.xi_lastbounce*ΔT + 1/2*vel*ΔT^2)/current_t
+        outp.opf.xi_m2 = (outp.opf.T_lastbounce*outp.opf.xi_m2 + outp.opf.xi_lastbounce.^2*ΔT + vel.*outp.opf.xi_lastbounce*ΔT^2 + 1/3*vel.^2*ΔT^2)/current_t
         
         outp.opf.T_lastbounce = copy(current_t)
         outp.opf.xi_lastbounce = copy(mstate.ξ)
@@ -231,7 +231,7 @@ end
 
 
 function get_event_time(mysampler::zz_sampler, mstate::zz_state, model::model)
-    
+    d = length(mstate.ξ)
     update_bound(mysampler.bb, model.ll, model.pr, mysampler.gs, mstate)
     event_times = [get_event_time(mysampler.bb.a[i], mysampler.bb.b[i]) for i in 1:d]  
     τ, i0 = findmin(event_times) 
@@ -251,12 +251,12 @@ function update_state(mysampler::zz_sampler, mstate::zz_state, model::model, τ)
     
     alpha = rate_estimated/bound
     #print(alpha, "\n")
-    if alpha > 1 + 1e-5
+    if alpha > 1 + 1e-10
         print("alpha: ", alpha, "\n")
         error(rate_estimated, " | ", 
               bound, " | ", 
               τ, " | ", mstate.α[mysampler.i0], " | ", mysampler.i0, " | ",
-              bb.a[mysampler.i0], ", ", bb.b[mysampler.i0])
+              mysampler.bb.a[mysampler.i0], ", ", mysampler.bb.b[mysampler.i0])
     end
     bounce = false
     if rand() < alpha
@@ -303,7 +303,7 @@ end
 # -------------------------------------- MAIN SAMPLER ---------------------------------------
 #--------------------------------------------------------------------------------------------
 
-function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Array{msampler}, mstate::zz_state)
+function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Array{msampler}, mstate::zz_state, Print=true)
 
     K = length(blocksampler)
     counter = 1
@@ -327,7 +327,7 @@ function ZZ_block_sample(model::model, outp::outputscheduler, blocksampler::Arra
         if counter%10_000 == 0 
             gc()
         end
-        if counter % (outp.opt.max_attempts/10) == 0 
+        if counter % (outp.opt.max_attempts/10) == 0 && Print 
             @printf("%i percent attempts in %.2f min; zz bounces = %i, hyp bounces = %i, total time of process = %.3f \n", Int64(100*counter/(outp.opt.max_attempts)), (time()-start)/60, sum(mstate.n_bounces), blocksampler[2].nbounces, mstate.T)
         end
     end
@@ -581,7 +581,7 @@ end
 # ---------------------------------------- GIBBS HMC ----------------------------------------
 #--------------------------------------------------------------------------------------------
 
-function HMC(model::model, current_q, epsilon, L) 
+function HMC(model::model, current_q, epsilon, L, Metropolise=true) 
     
     q = copy(current_q)
     p = randn(length(current_q))
@@ -603,14 +603,18 @@ function HMC(model::model, current_q, epsilon, L)
     proposed_U = -log_posterior(model, q) 
     proposed_K = sum(p.^2)/2
     
-    if rand() < exp(current_U-proposed_U+current_K-proposed_K) 
+    if Metropolise 
+        if rand() < exp(current_U-proposed_U+current_K-proposed_K) 
+            return q, 1
+        else 
+            return current_q, 0 
+        end
+    else
         return q, 1
-    else 
-        return current_q, 0 
     end
 end
 
-function GibbsHMC(model::model, ξ0, epsilon, L, T) 
+function GibbsHMC(model::model, ξ0, epsilon, L, T, Metropolise=true, Print=true) 
     d = size(model.ll.X,1)
     d_hyp = hyperparam_size(model.pr)
     xi_samples = zeros(d,T+1)
@@ -622,15 +626,20 @@ function GibbsHMC(model::model, ξ0, epsilon, L, T)
     
     start = time()
     for t in 1:T 
-        hmc = HMC(model, xi_samples[:,t], epsilon, L)
+        hmc = HMC(model, xi_samples[:,t], epsilon, L, Metropolise)
         xi_samples[:,t+1] = hmc[1]
         HMC_accept += hmc[2]
         block_Gibbs_update_hyperparams(model.pr, xi_samples[:,t+1])
         hyper_samples[:,t+1] = get_hyperparameters(model.pr)
         
-        if t % (T/10) == 0 
-            @printf("%i percent steps in %.1f min; HMC acceptance = %i percent \n", Int64(100*t/T), (time()-start)/60, 100*HMC_accept/t)
+        if Print 
+            if t % (T/10) == 0 
+                @printf("%i percent steps in %.1f min; HMC acceptance = %i percent \n", Int64(100*t/T), (time()-start)/60, 100*HMC_accept/t)
+            end
         end
+    end
+    if !Print 
+        print("HMC acceptance = ", 100*HMC_accept/T, " percent; ")
     end
     return xi_samples, hyper_samples, HMC_accept/T
 end 

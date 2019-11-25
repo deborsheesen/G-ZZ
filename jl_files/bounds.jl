@@ -10,7 +10,7 @@ include("/home/postdoc/dsen/Desktop/G-ZZ/jl_files/priors.jl")
 function build_linear_bound(ll::ll_logistic_sp, pr::gaussian_prior, gs::mbsampler_list)
     d, Nobs = size(ll.X)
     const_ = zeros(d)
-    @showprogress for i in 1:d
+    for i in 1:d
         nz_ind = ll.X[i,:].nzind
         const_[i] = maximum(abs.(ll.X[i,nz_ind]./get_weights(gs.mbs[i],nz_ind)))
     end
@@ -28,7 +28,7 @@ function build_linear_bound(ll::ll_logistic_sp, pr::gaussian_prior, gs::cvmbsamp
     C_lipschitz = spzeros(d, Nobs)
     const_ = zeros(d)
     normXj = [norm(ll.X[:,j]) for j in 1:Nobs]
-    @showprogress for i in 1:d 
+    for i in 1:d 
         nz_ind = ll.X[i,:].nzind
         C_lipschitz[i,nz_ind] = 1/4*abs.(ll.X[i,nz_ind ]).*normXj[nz_ind]
         const_[i] = maximum( C_lipschitz[i,nz_ind]./get_weights(gs.mbs[i], nz_ind) )

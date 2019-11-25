@@ -317,7 +317,7 @@ end
 MM_prior(d_cov, K, σ2) = MM_prior(d_cov, K, σ2, 1., 1., 1., 1., 1., 1.)
 
 function get_σ2(prior::MM_prior)
-    return vcat(prior.κ2/prior.ϕ, [1/prior.ϕ for i in 1:K], [prior.σ2 for i in 1:d_cov])
+    return vcat(prior.κ2/prior.ϕ, [1/prior.ϕ for i in 1:prior.K], [prior.σ2 for i in 1:prior.d_cov])
 end
 
 function get_μ(prior::MM_prior)
@@ -328,7 +328,7 @@ end
 function block_Gibbs_update_hyperparams(prior::MM_prior, ξ)
     #Gibbs steps here 
     prior.ϕ = rand(Gamma(prior.a_ϕ+(prior.K+1)/2, prior.b_ϕ+ξ[1]^2/(2*prior.κ2)+0.5*sum(ξ[2:prior.K+1].^2)))
-    prior.σ2 = rand(InverseGamma(prior.a_σ+3/2, prior.b_σ+0.5*sum(ξ[1+K+1:end].^2)))
+    prior.σ2 = rand(InverseGamma(prior.a_σ+3/2, prior.b_σ+0.5*sum(ξ[1+prior.K+1:end].^2)))
 end
 
 function hyperparam_size(prior::MM_prior) 
