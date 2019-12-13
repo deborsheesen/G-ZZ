@@ -142,7 +142,6 @@ function get_μ(prior::SS_prior)
 end
 
 function block_Gibbs_update_hyperparams(prior::SS_prior, ξ)
-   
     #gibbs steps here 
     p1 = prior.π/sqrt(prior.ν)*exp.(-ξ[2:end].^2./(2*prior.ν*prior.τ2))
     p2 = (1-prior.π)*exp.(-ξ[2:end].^2./(2*prior.τ2))
@@ -301,7 +300,7 @@ end
 #--------------------------------------------------------------------------------------------------------
 
 mutable struct MM_prior <:gaussian_prior
-    d_cov::Int64
+    d::Int64
     K::Int64
     σ2::Float64
     ϕ::Float64
@@ -314,14 +313,14 @@ mutable struct MM_prior <:gaussian_prior
 
 end
 
-MM_prior(d_cov, K, σ2) = MM_prior(d_cov, K, σ2, 1., 1., 1., 1., 1., 1.)
+MM_prior(d, K, σ2) = MM_prior(d, K, σ2, 1., 1., 1., 1., 1., 1.)
 
 function get_σ2(prior::MM_prior)
-    return vcat(prior.κ2/prior.ϕ, [1/prior.ϕ for i in 1:prior.K], [prior.σ2 for i in 1:prior.d_cov])
+    return vcat(prior.κ2/prior.ϕ, [1/prior.ϕ for i in 1:prior.K], [prior.σ2 for i in 1:prior.d])
 end
 
 function get_μ(prior::MM_prior)
-    d = 1+prior.K+prior.d_cov
+    d = 1+prior.K+prior.d
     return zeros(d)
 end
 

@@ -75,6 +75,9 @@ end
 projopf(A_xi, A_hyp, size_increment::Int64) = projopf(built_projopf(A_xi, A_hyp, size_increment)...)
 zz_state(opf::projopf) = zz_state(opf.xi_skeleton[:,opf.tcounter], opf.theta, opf.alpha_skeleton[:,opf.tcounter], opf.n_bounces, ones(length(opf.theta)))
 
+
+
+
 mutable struct maxa_opt <:outputtimer
     running::Bool
     max_attempts::Int64

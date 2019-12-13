@@ -1,25 +1,24 @@
 using JLD
 include("/home/postdoc/dsen/Desktop/G-ZZ/jl_files/zz_samplers.jl")
 
-function run_sampler(my_model, lambda, max_attempts, mb_size, prob_het=0.98, adapt_speed="by_var") 
+function run_sampler(my_model, lambda, max_attempts, mb_size, Print=false, prob_het=0.98, adapt_speed="by_var") 
     
-    dim_cov, n_groups = my_model.pr.d_cov, my_model.pr.K
+    dim_cov, n_groups = my_model.pr.d, my_model.pr.K
     dim_total, Nobs = size(my_model.ll.X)
     group_size = Int(Nobs/n_groups)
     
     # Define minibatch sampler list:
     gs = Array{mbsampler}(dim_total)
     gs[1] = umbsampler(0, Nobs, mb_size)
-
-    for i in 2:(1+n_groups+dim_cov)
+    for i in 2:dim_total
         weights_het = abs.(X[i,:])./sum(abs.(X[i,:]))
-        if length(X[i,:].nzind) < length(X[i,:]) && i > 1+n_groups 
+        if length(X[i,:].nzind) < length(X[i,:])
             gs[i] = spwumbsampler(Nobs, mb_size, weights_het, prob_het)
         else 
             gs[i] = wumbsampler(Nobs, mb_size, weights_het)
         end
     end
-    
+    gs[n_groups+2] = umbsampler(0, Nobs, mb_size)
     gs_list = mbsampler_list(dim_total,gs)
     
     # Define output scheduler etc:
@@ -42,7 +41,7 @@ function run_sampler(my_model, lambda, max_attempts, mb_size, prob_het=0.98, ada
     blocksampler[2] = hyper_sampler
     
     # Run sampler:
-    ZZ_block_sample(my_model, outp, blocksampler, mstate, false)
+    ZZ_block_sample(my_model, outp, blocksampler, mstate, Print)
     
     # Save data in files:
     filename  = "/xtmp/GZZ_data/mixed_effects/lambda:"*string(lambda)*"-dim_cov:"*string(dim_cov)*"-n_groups:"*string(n_groups)*"-Nobs:"*string(Nobs)*"-mb_size:"*string(mb_size)*".jld"

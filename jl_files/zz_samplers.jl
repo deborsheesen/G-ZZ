@@ -179,6 +179,8 @@ function built_projopf(A_xi, A_hyp, size_increment)
     return d, xi_skeleton, bt_skeleton, theta, alpha_skeleton, vel_skeleton, n_bounces, hyper_skeleton, tcounter, size_increment, A_xi, d_out_xi, A_hyp, d_out_hyp, xi_mu, xi_m2, xi_lastbounce, T_lastbounce, tot_bounces
 end
 
+
+
 function compress_xi(outp::projopf, xi)
    return outp.A_xi * xi  
 end
@@ -458,11 +460,11 @@ end
 
 function acf(x, maxlag)
     n = size(x)[1]
-    acf_vec = zeros(maxlag)
+    acf_vec = zeros(maxlag+1)
     xmean = mean(x)
-    for lag in 1:maxlag
+    for lag in 0:maxlag
         index, index_shifted = 1:(n-lag), (lag+1):n
-        acf_vec[lag] = mean((x[index]-xmean).*(x[index_shifted]-xmean))
+        acf_vec[lag+1] = mean((x[index]-xmean).*(x[index_shifted]-xmean))
     end
     acf_vec/var(x)
 end
