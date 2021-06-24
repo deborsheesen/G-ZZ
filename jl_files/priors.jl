@@ -1,6 +1,6 @@
 using Distributions
-include("/home/postdoc/dsen/Desktop/G-ZZ/jl_files/types.jl")
-include("/home/postdoc/dsen/Desktop/G-ZZ/jl_files/structs.jl")
+include("/home/postdoc/dsen/Desktop/codes/G-ZZ_clean/jl_files/types.jl")
+include("/home/postdoc/dsen/Desktop/codes/G-ZZ_clean/jl_files/structs.jl")
 
 #--------------------------------------------------------------------------------------------------------
 # Derivative for prior 

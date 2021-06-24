@@ -1,4 +1,4 @@
-include("/home/postdoc/dsen/Desktop/G-ZZ/jl_files/types.jl")
+include("/home/postdoc/dsen/Desktop/codes/G-ZZ_clean/jl_files/types.jl")
 
 mutable struct const_bound<:bound
     a::Float64
@@ -16,14 +16,14 @@ mutable struct outputscheduler
 end
 
 mutable struct zz_state 
-    ξ::Array{Float64}
-    θ::Array{Float64}
-    α::Array{Float64}
+    ξ::Array{Float64}           # parameter
+    θ::Array{Float64}           # hyper-parameter
+    α::Array{Float64}           # speed of parameter
     n_bounces::Array{Int64}
     est_rate::Array{Float64}
     T::Float64
-    mu::Array{Float64}
-    m2::Array{Float64} #second moment
+    mu::Array{Float64}          # first moment of parameter
+    m2::Array{Float64}          # second moment of parameter
     ξ_lastbounce::Array{Float64}
     T_lastbounce::Float64
 end

@@ -2,8 +2,8 @@
 # Code in one compacft file 
 
 using Distributions, TimeIt, ProgressMeter, PyPlot, JLD
-include("zz_structures.jl")
-include("mbsampler.jl")
+include("/home/postdoc/dsen/Desktop/codes/G-ZZ_clean/jl_files/zz_structures.jl")
+include("/home/postdoc/dsen/Desktop/codes/G-ZZ_clean/jl_files/mbsampler.jl")
 
 
 #To generate data::

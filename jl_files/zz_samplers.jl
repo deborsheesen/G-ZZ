@@ -1,11 +1,11 @@
 using Distributions, Optim, RCall, ProgressMeter
 
-include("/home/postdoc/dsen/Desktop/G-ZZ/jl_files/mbsampler.jl")
-include("/home/postdoc/dsen/Desktop/G-ZZ/jl_files/types.jl")
-include("/home/postdoc/dsen/Desktop/G-ZZ/jl_files/structs.jl")
-include("/home/postdoc/dsen/Desktop/G-ZZ/jl_files/models.jl")
-include("/home/postdoc/dsen/Desktop/G-ZZ/jl_files/priors.jl")
-include("/home/postdoc/dsen/Desktop/G-ZZ/jl_files/bounds.jl")
+include("/home/postdoc/dsen/Desktop/codes/G-ZZ_clean/jl_files/mbsampler.jl")
+include("/home/postdoc/dsen/Desktop/codes/G-ZZ_clean/jl_files/types.jl")
+include("/home/postdoc/dsen/Desktop/codes/G-ZZ_clean/jl_files/structs.jl")
+include("/home/postdoc/dsen/Desktop/codes/G-ZZ_clean/jl_files/models.jl")
+include("/home/postdoc/dsen/Desktop/codes/G-ZZ_clean/jl_files/priors.jl")
+include("/home/postdoc/dsen/Desktop/codes/G-ZZ_clean/jl_files/bounds.jl")
 
 
 function set_zz_samples(mstate::zz_state) 
@@ -583,27 +583,27 @@ end
 # ---------------------------------------- GIBBS HMC ----------------------------------------
 #--------------------------------------------------------------------------------------------
 
-function HMC(model::model, current_q, epsilon, L, Metropolise=true) 
+function HMC(model::model, current_q, stepsize, n_leapfrog, M, adapt=false, Metropolise=true) 
     
     q = copy(current_q)
     p = randn(length(current_q))
     current_p = copy(p)
     
-    p -= epsilon*gradient(model,q)/2
-    for i in 1:L 
-        q += epsilon*p 
-        if i!=L 
-            p -= epsilon*gradient(model,q)
+    p -= stepsize*diag(M).*gradient(model,q)/2
+    for i in 1:n_leapfrog 
+        q += stepsize*diag(M).*p 
+        if i!=n_leapfrog 
+            p -= stepsize*diag(M).*gradient(model,q)
         end
     end 
-    p -= epsilon*gradient(model,q)/2
+    p -= stepsize*diag(M).*gradient(model,q)/2
     
     p = -p 
     
     current_U = -log_posterior(model, current_q) 
-    current_K = sum(current_p.^2)/2
+    current_K = sum(current_p.^2./(2*diag(M).^2))
     proposed_U = -log_posterior(model, q) 
-    proposed_K = sum(p.^2)/2
+    proposed_K = sum(p.^2./(2*diag(M).^2))
     
     if Metropolise 
         if rand() < exp(current_U-proposed_U+current_K-proposed_K) 
@@ -616,34 +616,49 @@ function HMC(model::model, current_q, epsilon, L, Metropolise=true)
     end
 end
 
-function GibbsHMC(model::model, ξ0, epsilon, L, T, Metropolise=true, Print=true) 
+function GibbsHMC(model::model, ξ0, stepsize, n_leapfrog, n_mcmc, adapt=false, Metropolise=true, Print=true) 
     d = size(model.ll.X,1)
     d_hyp = hyperparam_size(model.pr)
-    xi_samples = zeros(d,T+1)
+    xi_samples = zeros(d,n_mcmc+1)
     xi_samples[:,1] = ξ0
-    hyper_samples = zeros(d_hyp,T+1)
+    hyper_samples = zeros(d_hyp,n_mcmc+1)
     hyper_samples[:,1] = get_hyperparameters(model.pr)
+        
+    M = eye(d)
     
     HMC_accept = 0
+    if adapt 
+        xi_mu = ξ0
+        xi_m2 = ξ0.^2
+    end
     
     start = time()
-    for t in 1:T 
-        hmc = HMC(model, xi_samples[:,t], epsilon, L, Metropolise)
+    for t in 1:n_mcmc 
+        hmc = HMC(model, xi_samples[:,t], stepsize, n_leapfrog, M, adapt, Metropolise)
         xi_samples[:,t+1] = hmc[1]
         HMC_accept += hmc[2]
         block_Gibbs_update_hyperparams(model.pr, xi_samples[:,t+1])
         hyper_samples[:,t+1] = get_hyperparameters(model.pr)
         
-        if Print 
-            if t % (T/10) == 0 
-                @printf("%i percent steps in %.1f min; HMC acceptance = %i percent \n", Int64(100*t/T), (time()-start)/60, 100*HMC_accept/t)
+        if adapt 
+            xi_mu = (t*xi_mu + xi_samples[:,t+1])/(t+1)
+            xi_m2 = (t*xi_m2 + xi_samples[:,t+1].^2)/(t+1)
+            if t > n_mcmc/5
+                M = Diagonal(xi_m2-xi_mu.^2)
             end
         end
+        
+        if Print 
+            if t % (n_mcmc/10) == 0 
+                @printf("%i percent steps in %.1f min; HMC acceptance = %i percent \n", Int64(100*t/n_mcmc), (time()-start)/60, 100*HMC_accept/t)
+            end
+        end
+        
     end
     if !Print 
-        print("HMC acceptance = ", 100*HMC_accept/T, " percent; ")
+        print("HMC acceptance = ", 100*HMC_accept/n_mcmc, " percent; ")
     end
-    return xi_samples, hyper_samples, HMC_accept/T
+    return xi_samples, hyper_samples, HMC_accept/n_mcmc
 end 
 
 
